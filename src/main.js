@@ -1,0 +1,499 @@
+/* REDROCK — open road.
+ *
+ * The rally stripped away: no stage, no rivals, no countdown, no finish.
+ * Just the car, a flat road that never ends, and the same cel pipeline,
+ * chase camera and physics the rally used. `s` wraps invisibly (see
+ * FlatTrack) so the drive is endless in every direction.
+ *
+ * The harness control surface from the rally build is kept — begin, step,
+ * renderOnce, telemetry, goTo, driveTo, warp, autopilot — because tools/
+ * and the boot path in index.html depend on window.__game.
+ */
+import * as THREE from 'three';
+import { FlatTrack, ROAD_WIDTH, LANE_LAT } from './flat/FlatTrack.js';
+import { buildFlatWorld } from './flat/FlatWorld.js';
+import { loadCarGLB } from './car/mesh.js';
+import { Car, MAX_RPM, steerLockAt } from './car/physics.js';
+import { ChaseCamera } from './car/camera.js';
+import { Driver } from './car/driver.js';
+import { Input } from './core/input.js';
+import { celMaterial } from './render/cel.js';
+import { CelPipeline } from './render/outline.js';
+import { Audio } from './audio/index.js';
+import { clamp } from './core/util.js';
+
+/* The rally stage's light rig, moved over verbatim so the comic look
+   survives the flat land. See the original main.js for the reasoning. */
+const SUN_OFFSET = new THREE.Vector3(-150, 125, 165);
+const FILL_OFFSET = new THREE.Vector3(150, 56, -165);
+
+const SUBSTEP = 1 / 120;
+const MAX_SUBSTEPS = 8;
+
+const q = new URLSearchParams(location.hash.slice(1));
+
+const TIERS = {
+  low: { dpr: 0.75, shadow: 1536, shadowDist: 30 },
+  medium: { dpr: 1.0, shadow: 2048, shadowDist: 38 },
+  high: { dpr: 1.0, shadow: 4096, shadowDist: 46 },
+};
+
+/* The player's garage. Each entry is a GLB from assets/vehicle/ which
+   buildCarFromGLTF scales onto the physics platform, keeping the model's own
+   baked track width so every vehicle runs a different tyre spacing. V cycles
+   through these; #car=<name> picks the starting one. */
+const VEHICLES = [
+  { name: 'Sports Sedan', url: '/assets/vehicle/sedan-sports.glb', perf: { power: 1.0, drag: 1.0 } },
+  { name: 'SUV', url: '/assets/vehicle/suv.glb', perf: { power: 0.72, drag: 1.0 } },
+  { name: 'Race', url: '/assets/vehicle/race.glb', perf: { power: 1.58, drag: 0.95 } },
+  { name: 'Sedan', url: '/assets/vehicle/sedan.glb', perf: { power: 0.69, drag: 1.0 } },
+  { name: 'Police', url: '/assets/vehicle/police.glb', perf: { power: 0.92, drag: 1.0 } },
+  { name: 'Hatchback', url: '/assets/vehicle/hatchback-sports.glb', perf: { power: 0.59, drag: 1.0 } },
+  { name: 'Taxi', url: '/assets/vehicle/taxi.glb', perf: { power: 0.49, drag: 1.0 } },
+  { name: 'Van', url: '/assets/vehicle/van.glb', perf: { power: 0.44, drag: 1.0 } },
+];
+
+class Game {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.clock = new THREE.Clock();
+    this.paused = false;
+    this.running = false;
+    this.fps = 0;
+    this._acc = 0; this._frames = 0;
+    this._simAcc = 0;
+    this.time = 0;
+
+    this._manual = location.hash.includes('manual');
+    this.tier = TIERS[q.get('tier')] ? q.get('tier') : 'high';
+    this.fpsCap = +(q.get('cap') || 60);
+    this._lastFrame = 0;
+    this._lastRaf = -1;
+    this._vsync = Infinity;
+    this._vsyncMin = Infinity;
+    this._vsyncSeen = 0;
+    this._vsyncSum = 0;
+    this._vsyncN = 0;
+    this._pending = 0;
+
+    this.renderer = new THREE.WebGLRenderer({
+      canvas, antialias: true, powerPreference: 'high-performance', stencil: false,
+    });
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, TIERS[this.tier].dpr));
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.toneMapping = THREE.NoToneMapping;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x8cc8e8);
+    /* No fog — this world has distance to look at (the whole playground is
+       visible from a standstill), so nothing melts into the horizon. */
+
+    this.camera = new THREE.PerspectiveCamera(62, 1, 0.4, 20000);
+
+    /* The world. */
+    this.track = new FlatTrack();
+    const sm = TIERS[this.tier];
+    const world = buildFlatWorld({
+      shadowSize: Math.min(sm.shadow, this.renderer.capabilities.maxTextureSize),
+      shadowDist: sm.shadowDist,
+    });
+    this.scene.add(world.root);
+    this.sun = world.sun;
+    this.sun.position.copy(SUN_OFFSET);
+    this.sun.target.position.set(0, 0, 0);
+
+    this.buildCars();
+    this.sun.target.updateMatrixWorld();
+
+    this.input = new Input();
+    this.chase = new ChaseCamera(this.camera);
+
+    /* Mouse look: moving the mouse orbits the camera around the car. The
+       deltas accumulate into an absolute angle, so the camera holds whatever
+       angle the mouse last moved it to. */
+    this.lookYaw = 0;
+    this.lookPitch = 0;
+    addEventListener('mousemove', e => {
+      this.lookYaw += e.movementX * 0.004;
+      this.lookPitch = clamp(this.lookPitch + e.movementY * 0.003, -0.6, 0.6);
+    });
+
+    this.pipeline = new CelPipeline(this.renderer, this.scene, this.camera, {
+      enabled: q.get('post') !== '0',
+      outlines: q.get('ink') !== '0',
+      grade: q.get('grade') !== '0',
+      vignette: q.get('vignette') !== '0',
+      speed: true,
+      impact: q.get('impactfx') !== '0',
+    });
+
+    this.audio = new Audio();
+    let woke = false;
+    const wake = () => {
+      this.audio.start();
+      if (woke) return;
+      woke = true;
+    };
+    addEventListener('pointerdown', wake, { once: true });
+    addEventListener('keydown', wake, { once: true });
+
+    this.hud = new Hud(document.getElementById('hud'));
+    this.hud.setCarName(VEHICLES[this.vehicleIndex].name);
+    this.hudOn = q.get('hud') !== '0';
+
+    this.resize();
+    addEventListener('resize', () => this.resize());
+  }
+
+  buildCars() {
+    this.player = new Car(this.track, { palette: 0, perf: VEHICLES[0].perf });
+    this.player.placeAt(20, LANE_LAT);
+
+    this.vehicleViews = new Map();
+    this.vehiclesLoading = new Map();
+
+    const want = q.get('car');
+    let idx = 0;
+    if (want) {
+      const byUrl = VEHICLES.findIndex(v => v.url.endsWith(`/${want}.glb`));
+      if (byUrl >= 0) idx = byUrl;
+    }
+    this.vehicleIndex = idx;
+    addEventListener('keydown', e => {
+      if (e.key === 'v' || e.key === 'V') this.cycleVehicle();
+    });
+    this._loadVehicle(this.vehicleIndex);
+  }
+
+  /* Give a player view its materials: the GLB models are textured, so they
+     get the game's cel ramp with their own colormap. */
+  _styleView(view) {
+    view.root.traverse(o => {
+      if (!o.isMesh) return;
+      o.castShadow = true;
+      const map = o.material ? o.material.map : null;
+      o.material = celMaterial({ map });
+    });
+  }
+
+  cycleVehicle() {
+    this.vehicleIndex = (this.vehicleIndex + 1) % VEHICLES.length;
+    this._loadVehicle(this.vehicleIndex);
+  }
+
+  async _setVehicle(idx) {
+    const v = VEHICLES[idx];
+    if (this.vehicleViews.has(v.name)) return this.vehicleViews.get(v.name);
+    if (this.vehiclesLoading.has(v.name)) return this.vehiclesLoading.get(v.name);
+    const p = loadCarGLB(v.url).then(view => {
+      this._styleView(view);
+      this.vehicleViews.set(v.name, view);
+      return view;
+    });
+    this.vehiclesLoading.set(v.name, p);
+    return p;
+  }
+
+  async _loadVehicle(idx) {
+    const v = VEHICLES[idx];
+    const view = await this._setVehicle(idx);
+    if (VEHICLES[this.vehicleIndex] !== v) return;   // user moved on while loading
+    this.player.setPerf(v.perf);
+    if (this.playerView && this.playerView.root.parent === this.scene) {
+      this.scene.remove(this.playerView.root);
+    }
+    this.scene.add(view.root);
+    this.playerView = view;
+    this.hud.setCarName(v.name);
+  }
+
+  resize() {
+    const w = innerWidth, h = innerHeight;
+    this.renderer.setSize(w, h, false);
+    this.pipeline.setSize(w, h);
+    this.hud.resize(w, h, devicePixelRatio);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+  }
+
+  step(dt) {
+    this.input.update(dt);
+
+    /* Escape toggles a freeze. The world is not redrawn while paused — see
+       frame() — so the picture is genuinely still. */
+    if (this.input.pausePressed) this.togglePause();
+    if (this.paused) return;
+
+    this.time += dt;
+    if (this.input.resetPressed) this.respawn();
+
+    const p = this.player;
+    p.lastImpact = 0;
+    p.landingForce = 0;
+
+    /* Fixed 120 Hz substeps, exactly as the rally ran them. */
+    this._simAcc += dt;
+    let n = 0;
+    while (this._simAcc >= SUBSTEP && n < MAX_SUBSTEPS) {
+      p.step(SUBSTEP, this.driverInput());
+      this._simAcc -= SUBSTEP;
+      n++;
+    }
+    if (n >= MAX_SUBSTEPS) this._simAcc = 0;
+    const alpha = this._simAcc / SUBSTEP;
+
+    p.applyTo(this.playerView, alpha);
+
+    this.pipeline.update(dt, { speed: p.speed });
+    if (p.lastImpact > 0.02) {
+      this.chase.addShake(p.lastImpact);
+      this.pipeline.addImpact(p.lastImpact);
+      this.audio.impact(p.lastImpact);
+    }
+
+    this.chase.update(p, dt, {
+      lookBack: this.input.lookBack,
+      orbitYaw: this.lookYaw,
+      orbitPitch: this.lookPitch,
+    });
+
+    /* Keep the sun's shadow frustum over the car. */
+    this.sun.position.copy(p.pos).add(SUN_OFFSET);
+    this.sun.target.position.copy(p.pos);
+    this.sun.target.updateMatrixWorld();
+
+    this.audio.update(dt, {
+      speed: p.speed,
+      rpm: p.rpm / MAX_RPM,
+      gear: p.gear,
+      throttle: p.throttle,
+      brake: p.brake,
+      handbrake: p.handbrake,
+      slipAngle: p.slipAngle,
+      wheelSlip: Math.max(...p.wheelSlip),
+      offRoad: p.offRoad,
+      airborne: p.airborne,
+      landingForce: p.landingForce,
+      /* No ocean in this world — push the ambience's surf past hearing. */
+      shoreDistance: 1e9, shoreDrop: 0, oceanSide: 1, openness: 0,
+    });
+
+    this.hud.update(dt, { speed: p.speed, gear: p.gear });
+  }
+
+  driverInput() {
+    if (this.bot) return this.bot.drive(this.player, 1 / 120);
+    const i = this.input;
+    return { steer: i.steer, throttle: i.throttle, brake: i.brake, handbrake: i.handbrake };
+  }
+
+  togglePause() {
+    this.paused = !this.paused;
+    if (this.paused) this.audio.stop();
+    else this.audio.start();
+  }
+
+  respawn() {
+    this.resetSimClock();
+    const p = this.player;
+    p.placeAt(clamp(p.s - 12, 0, this.track.roadEnd), LANE_LAT);
+    p.vertVel = 0; p.height = 0;
+    this.chase.started = false;
+  }
+
+  resetSimClock() { this._simAcc = 0; }
+
+  _paceK(period, vsync) {
+    if (!(vsync > 0) || !Number.isFinite(vsync)) return 1;
+    return Math.max(1, Math.round(period / vsync));
+  }
+
+  frame(now) {
+    this._raf = requestAnimationFrame(t => this.frame(t));
+
+    const prev = this._lastRaf;
+    this._lastRaf = now;
+    const gap = prev >= 0 ? now - prev : -1;
+    if (gap > 0) {
+      if (gap >= 1 && gap < this._vsyncMin) this._vsyncMin = gap;
+      this._vsyncSum += gap; this._vsyncN++;
+    }
+    if (++this._vsyncSeen >= 60) {
+      if (this._vsyncMin < Infinity) this._vsync = this._vsyncMin;
+      else if (this._vsyncN > 0) this._vsync = this._vsyncSum / this._vsyncN;
+      this._vsyncMin = Infinity;
+      this._vsyncSum = 0; this._vsyncN = 0;
+    } else if (this._vsync === Infinity && gap >= 1) {
+      this._vsync = gap;
+    }
+
+    if (this.fpsCap > 0) {
+      const period = 1000 / this.fpsCap;
+      const k = this._paceK(period, this._vsync);
+      this._pending++;
+      if (this._pending < k && now - this._lastFrame < period) return;
+      this._pending = 0;
+      this._lastFrame = now;
+    }
+    const dt = Math.min(this.clock.getDelta(), 0.05);
+    this._acc += dt; this._frames++;
+    if (this._acc > 0.5) { this.fps = this._frames / this._acc; this._acc = 0; this._frames = 0; }
+    if (!this.paused) this.step(dt);
+    /* Paused: no GL work at all, the compositor holds the last picture. */
+    if (!this.paused) this.pipeline.render();
+    if (this.hudOn) this.hud.draw(this.paused);
+  }
+
+  /* ---- harness control surface ------------------------------------- */
+  begin() {
+    if (this.running) return;
+    this.running = true;
+    this.clock.start();
+    this._lastRaf = -1;
+    this._vsync = Infinity; this._vsyncMin = Infinity; this._vsyncSeen = 0;
+    this._vsyncSum = 0; this._vsyncN = 0; this._pending = 0;
+    document.getElementById('boot')?.classList.add('gone');
+    this._raf = requestAnimationFrame(t => this.frame(t));
+  }
+  setPaused(p) { this.paused = p; }
+  renderOnce() { this.pipeline.render(); }
+
+  goTo(t) {
+    this.resetSimClock();
+    this.s = clamp(t, 0, 1) * this.track.length;
+    this.player.placeAt(clamp(this.s, 0, this.track.length - 1), LANE_LAT);
+    this.player.applyTo(this.playerView);
+    this.chase.started = false;
+    this.chase.update(this.player, 1 / 60, {});
+  }
+
+  warp(sec) {
+    for (let i = 0; i < sec * 60; i++) this.step(1 / 60);
+  }
+
+  driveTo(t, { runUp = 180, skill = 0.85, maxSec = 30 } = {}) {
+    const target = clamp(t, 0, 1) * this.track.length;
+    const hadBot = this.bot;
+    this.autopilot(true, skill);
+    this.goTo(Math.max(0, target - runUp) / this.track.length);
+    const limit = maxSec * 60;
+    for (let i = 0; i < limit && this.player.s < target; i++) this.step(1 / 60);
+    this.s = this.player.s;
+    if (!hadBot) this.autopilot(false);
+    return this.telemetry();
+  }
+
+  autopilot(on, skill = 0.85) {
+    this.bot = on ? new Driver(this.track, { skill }) : null;
+  }
+
+  telemetry() {
+    const p = this.player;
+    return {
+      kmh: +p.kmh.toFixed(1),
+      s: +p.s.toFixed(1),
+      lat: +p.lat.toFixed(2),
+      slipDeg: +((p.slipAngle * 180) / Math.PI).toFixed(1),
+      yawRate: +p.r.toFixed(2),
+      gear: p.gear + 1,
+      rpm: Math.round(p.rpm),
+      air: +p.height.toFixed(2),
+      roll: +((p.roll * 180) / Math.PI).toFixed(1),
+      pitch: +((p.pitch * 180) / Math.PI).toFixed(1),
+      offRoad: +p.offRoad.toFixed(2),
+    };
+  }
+
+  info() {
+    const r = this.pipeline?.stats ?? this.renderer.info.render;
+    return {
+      calls: r.calls, triangles: r.triangles,
+      programs: this.renderer.info.programs?.length ?? 0,
+      textures: this.renderer.info.memory.textures,
+      geometries: this.renderer.info.memory.geometries,
+      roadWidth: ROAD_WIDTH,
+      car: this.telemetry(),
+    };
+  }
+}
+
+/* The whole HUD: a speed readout, a gear, a hint line, and a pause plate.
+   Drawn in canvas like the rally's, but with none of its furniture. */
+class Hud {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.w = 0; this.h = 0; this.dpr = 1;
+    this.speed = 0; this.gear = 1;
+    this.carName = '';
+  }
+
+  resize(w, h, dpr) {
+    this.w = w; this.h = h; this.dpr = dpr;
+    this.canvas.width = Math.round(w * dpr);
+    this.canvas.height = Math.round(h * dpr);
+  }
+
+  setCarName(name) { this.carName = name; }
+
+  update(dt, { speed, gear }) {
+    this.speed = speed;
+    this.gear = gear;
+  }
+
+  draw(paused = false) {
+    const { ctx, w, h, dpr } = this;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    if (paused) {
+      ctx.font = '700 34px ui-sans-serif, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#f0e6d8';
+      ctx.shadowColor = 'rgba(20,10,14,0.9)';
+      ctx.shadowBlur = 12;
+      ctx.fillText('PAUSED', w / 2, h / 2 - 10);
+      ctx.shadowBlur = 0;
+      ctx.font = '500 15px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = '#c9b8a5';
+      ctx.fillText('ESC to resume', w / 2, h / 2 + 22);
+      return;
+    }
+
+    /* Speed, bottom right. */
+    const kmh = Math.round(this.speed * 3.6);
+    ctx.textAlign = 'right';
+    ctx.shadowColor = 'rgba(20,10,14,0.9)';
+    ctx.shadowBlur = 10;
+    ctx.font = '700 64px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#f0e6d8';
+    ctx.fillText(String(kmh), w - 28, h - 66);
+    ctx.font = '600 17px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#c9b8a5';
+    ctx.fillText('KM/H', w - 28, h - 38);
+    ctx.shadowBlur = 0;
+    ctx.font = '600 15px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillText('GEAR ' + (this.gear + 1), w - 28, h - 14);
+
+    /* Hint, bottom left. */
+    ctx.textAlign = 'left';
+    ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(240,230,216,0.55)';
+    ctx.fillText('WASD / ARROWS  drive   MOUSE  look   V  vehicle   R  reset   ESC  pause', 24, h - 20);
+
+    /* Current vehicle, bottom centre. */
+    if (this.carName) {
+      ctx.textAlign = 'center';
+      ctx.font = '600 13px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(240,230,216,0.75)';
+      ctx.fillText(this.carName, w / 2, h - 20);
+    }
+  }
+}
+
+const game = new Game(document.getElementById('view'));
+game.THREE = THREE;
+window.__game = game;
+if (!location.hash.includes('manual')) game.begin();
