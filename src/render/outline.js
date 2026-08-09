@@ -126,7 +126,11 @@ varying vec3 vViewPos;
 varying vec2 vUv;
 void main() {
   vUv = uv;
-  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vec3 transformed = position;
+  #ifdef USE_INSTANCING
+    transformed = (instanceMatrix * vec4(transformed, 1.0)).xyz;
+  #endif
+  vec4 mv = modelViewMatrix * vec4(transformed, 1.0);
   vViewPos = mv.xyz;
   gl_Position = projectionMatrix * mv;
 }`;
@@ -753,7 +757,9 @@ void main() {
  */
 const INK_CLASS = [
   [/^road$/, 1],
+  [/^road-deck$/, 1],
   [/^(berm|road-supports)/, 2],
+  [/^road-(walls|marks)$/, 2],
   [/^(landform|basin)/, 3],
   [/^(shell|wheel\d)/, 4],
   [/^guardrail$/, 5],
