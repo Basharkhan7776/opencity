@@ -4,7 +4,7 @@
  * /node_modules/three/build/three.module.js. That is right for local
  * development and for the ~240 tools in this directory, and wrong for Pages
  * twice over: node_modules is not in the repository, and a leading slash
- * resolves to the domain root while a project site is served from /redrock/.
+ * resolves to the domain root while a project site is served from /OPENCITY/.
  *
  * So the rewrite happens here rather than in the source file. index.html stays
  * exactly as every tool expects to find it, and the deployed copy gets a
@@ -23,20 +23,20 @@ const REWRITTEN = '"three": "./vendor/three.module.js"';
 
 /* Social card metadata, injected here rather than into index.html so the file
    the capture suite photographs is never touched by a hosting concern. */
-const SITE = 'https://starknightt.github.io/redrock/';
+const SITE = 'https://starknightt.github.io/OPENCITY/';
 
 /* Scrapers do not resolve relative image URLs, so og:image has to be absolute
    even though everything else on the page is deliberately relative. */
 const META = `<meta name="description" content="A cel-shaded downhill racing game built in Three.js. Every mesh, texture and sound is generated procedurally in code — no external assets.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="${SITE}">
-<meta property="og:title" content="redrock — procedural cel-shaded downhill racing">
+<meta property="og:title" content="OPENCITY — procedural cel-shaded downhill racing">
 <meta property="og:description" content="A coastal mountain descent against three rivals. No models, no textures, no audio files: the entire world is generated in code at load time.">
 <meta property="og:image" content="${SITE}social.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="redrock — procedural cel-shaded downhill racing">
+<meta name="twitter:title" content="OPENCITY — procedural cel-shaded downhill racing">
 <meta name="twitter:description" content="A coastal mountain descent against three rivals. Every asset generated in code at load time.">
 <meta name="twitter:image" content="${SITE}social.png">
 `;

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>REDROCK — downhill</title>
+<title>OPENCITY — downhill</title>
 <style>
   :root {
     color-scheme: dark;
@@ -39,8 +39,9 @@
     touch-action: none;
     -webkit-user-select: none; user-select: none;
     -webkit-tap-highlight-color: transparent;
+    cursor: none; /* driving default — shown again only on pause menu */
   }
-  #view { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  #view { display: block; width: 100vw; height: 100vh; touch-action: none; cursor: none; }
   #hud { position: fixed; inset: 0; pointer-events: none; }
   #boot {
     position: fixed; inset: 0; display: grid; place-items: center;
@@ -62,7 +63,7 @@
 <body>
 <canvas id="view"></canvas>
 <canvas id="hud"></canvas>
-<div id="boot">redrock</div>
+<div id="boot">OPENCITY</div>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

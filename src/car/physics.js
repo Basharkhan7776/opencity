@@ -307,7 +307,19 @@ export class Car {
   placeAt(s, lat = 0) {
     const f = this.track.frameAt(s);
     this.s = s; this.lat = lat;
-    this.pos.copy(f.pos).addScaledVector(f.right, lat).addScaledVector(f.up, CAR.rideHeight);
+    /* Free-roam island: sit on heightAt, not the road crown at lat=0. */
+    if (this.track.freeRoam && typeof this.track.heightAt === 'function') {
+      this.surfaceAt(s, lat, this.pos);
+      if (typeof this.track.normalAt === 'function') {
+        this.track.normalAt(this.pos.x, this.pos.z, this.up);
+      } else {
+        this.up.set(0, 1, 0);
+      }
+      this.pos.addScaledVector(this.up, CAR.rideHeight);
+    } else {
+      this.pos.copy(f.pos).addScaledVector(f.right, lat).addScaledVector(f.up, CAR.rideHeight);
+      this.up.copy(f.up);
+    }
     /* A placement is not motion. Collapsing both onto the new position is
        what stops the first frame after a teleport extrapolating across the
        whole jump. */
@@ -345,7 +357,9 @@ export class Car {
     this._reverse = false;
     this._climbing = false;
     this._hasHint = false;
-    this.up.copy(f.up);
+    if (!(this.track.freeRoam && typeof this.track.heightAt === 'function')) {
+      this.up.copy(f.up);
+    }
     this._orient(f);
   }
 
@@ -373,6 +387,14 @@ export class Car {
 
   /** Surface height under a point given as (s, lat), in world space. */
   surfaceAt(s, lat, out = new THREE.Vector3()) {
+    /* Free-roam island: world X from s, world Z from lat, Y from the same
+       heightfield the mesh was built with. Never invent a second surface. */
+    if (this.track.freeRoam && typeof this.track.heightAt === 'function') {
+      const f = this.track.frameAt(s, _fB);
+      const x = f.pos.x;
+      const z = lat;
+      return out.set(x, this.track.heightAt(x, z), z);
+    }
     const f = this.track.frameAt(s, _fB);
     const hw = f.width * 0.5;
     const u = clamp(Math.abs(lat) / hw, 0, 1);
@@ -672,9 +694,13 @@ export class Car {
     if (grounded) FxTyre -= rollRes;
 
     /* ---- gravity in the road plane -------------------------------------
-       The reason a downhill stage plays differently from a flat one. */
+       The reason a downhill stage plays differently from a flat one.
+       Free-roam island: project out the surface normal so slopes pull the
+       car downhill; the road frame's up is always world-Y on FlatTrack. */
     _g.set(0, -G * MASS, 0);
-    _g.addScaledVector(f.up, -_g.dot(f.up));
+    const gUp = (this.track.freeRoam && typeof this.track.normalAt === 'function')
+      ? this.up : f.up;
+    _g.addScaledVector(gUp, -_g.dot(gUp));
     Fx += _g.dot(this.forward);
     const Fy_g = _g.dot(this.right);
 
@@ -923,18 +949,68 @@ export class Car {
     this._orient(f);
     _d.copy(this.forward).multiplyScalar(this.vx * dt)
       .addScaledVector(this.right, this.vy * dt);
-    this.pos.add(_d);
-    // Reproject onto the surface, keeping whatever air we have.
-    const proj2 = track.project(this.pos, this.s);
-    const f2 = track.frameAt(proj2.s, _fC);
-    const lat2 = this._climb(proj2.s, proj2.lat, f2, dt);
-    const surf2 = this.surfaceAt(proj2.s, lat2, _p);
-    this.pos.copy(surf2).addScaledVector(f2.up, CAR.rideHeight + this.height);
-    this.up.copy(f2.up);
-    this.s = proj2.s; this.lat = lat2;
 
-    this._walls(f2, dt);
-    this._suspension(f2, dt, ax, Fy / MASS, FyLoad / MASS);
+    if (track.freeRoam && typeof track.heightAt === 'function') {
+      /* Island free-roam: horizontal step in XZ, then sit on heightAt.
+         Climb is budgeted in any horizontal direction (not just lat), so
+         steep mountain faces cannot swallow the car. */
+      const oldX = this.pos.x;
+      const oldZ = this.pos.z;
+      const oldGround = track.heightAt(oldX, oldZ);
+      let nx = oldX + _d.x;
+      let nz = oldZ + _d.z;
+      let newGround = track.heightAt(nx, nz);
+      const budget = MAX_LIFT * dt;
+      if (this.height <= 0.35 && newGround - oldGround > budget) {
+        let lo = 0, hi = 1;
+        for (let i = 0; i < 8; i++) {
+          const mid = (lo + hi) * 0.5;
+          const mx = oldX + _d.x * mid;
+          const mz = oldZ + _d.z * mid;
+          if (track.heightAt(mx, mz) - oldGround > budget) hi = mid;
+          else lo = mid;
+        }
+        nx = oldX + _d.x * lo;
+        nz = oldZ + _d.z * lo;
+        newGround = track.heightAt(nx, nz);
+        const blocked = 1 - lo;
+        if (blocked > 0.01) {
+          this.vx *= lerp(1, 0.82, clamp(blocked, 0, 1));
+          this.vy *= lerp(1, 0.82, clamp(blocked, 0, 1));
+          this.lastImpact = Math.max(this.lastImpact, clamp(blocked * 0.35, 0, 0.4));
+        }
+      }
+      this.pos.x = nx;
+      this.pos.z = nz;
+      const proj2 = track.project(this.pos, this.s);
+      const f2 = track.frameAt(proj2.s, _fC);
+      const surf2 = this.surfaceAt(proj2.s, proj2.lat, _p);
+      /* Keep air along world up — height is measured along f.up (world Y). */
+      this.pos.copy(surf2).addScaledVector(f2.up, CAR.rideHeight + this.height);
+      if (typeof track.normalAt === 'function') {
+        track.normalAt(this.pos.x, this.pos.z, this.up);
+      } else {
+        this.up.copy(f2.up);
+      }
+      this.s = proj2.s;
+      this.lat = proj2.lat;
+      this._obstacles(dt);
+      this._walls(f2, dt);
+      this._suspension(f2, dt, ax, Fy / MASS, FyLoad / MASS);
+    } else {
+      this.pos.add(_d);
+      // Reproject onto the surface, keeping whatever air we have.
+      const proj2 = track.project(this.pos, this.s);
+      const f2 = track.frameAt(proj2.s, _fC);
+      const lat2 = this._climb(proj2.s, proj2.lat, f2, dt);
+      const surf2 = this.surfaceAt(proj2.s, lat2, _p);
+      this.pos.copy(surf2).addScaledVector(f2.up, CAR.rideHeight + this.height);
+      this.up.copy(f2.up);
+      this.s = proj2.s; this.lat = lat2;
+
+      this._walls(f2, dt);
+      this._suspension(f2, dt, ax, Fy / MASS, FyLoad / MASS);
+    }
 
     if (!this.finished) this.raceTime += dt;
     if (this.s > track.finishS) this.finished = true;
@@ -955,7 +1031,8 @@ export class Car {
     if (this.s > this._advancedAt + 5) { this._advancedAt = this.s; this._sinceAdvance = 0; }
     else this._sinceAdvance += dt;
 
-    const facing = this.forward.dot(f2.tan);
+    /* _fC was filled by frameAt in the move branch above. */
+    const facing = this.forward.dot(_fC.tan);
     const bad = facing < 0.15
       || (this.speed < 1.8 && !this.airborne)
       || this._sinceAdvance > 6;
@@ -1050,6 +1127,89 @@ export class Car {
         : clamp(Math.abs(rate) / 26, 0, 0.55));
     this._climbing = true;
     return lo;
+  }
+
+  /**
+   * Crash into free-roam props (trees and rocks — not bushes).
+   *
+   * Each obstacle is a vertical cylinder in plan. On penetration: push the
+   * car out, kill the velocity into the trunk, and raise lastImpact so audio
+   * and camera shake fire. Solid enough that driving into a tree stops you.
+   * Bushes are omitted from the collider list in Vegetation.js.
+   */
+  _obstacles(_dt) {
+    const track = this.track;
+    if (!track.queryObstacles) return;
+    /* Car treated as a circle in XZ — a little larger than half-width so
+       corners still catch trunks. */
+    const carR = CAR.width * 0.48;
+    const hits = track.queryObstacles(this.pos.x, this.pos.z, carR + 3);
+    if (!hits || !hits.length) { this._obsContact = false; return; }
+
+    let hit = false;
+    for (const o of hits) {
+      /* Defensive: plants/bushes never stop the car even if present in the grid. */
+      if (o.kind === 'plant') continue;
+      const dx = this.pos.x - o.x;
+      const dz = this.pos.z - o.z;
+      const dist = Math.hypot(dx, dz);
+      const min = carR + o.radius;
+      if (dist >= min || dist < 1e-6) continue;
+
+      /* Push out along the contact normal (from trunk toward car). */
+      const nx = dx / dist;
+      const nz = dz / dist;
+      const push = min - dist;
+      this.pos.x += nx * push;
+      this.pos.z += nz * push;
+
+      /* World-horizontal velocity from car frame. */
+      const wx = this.vx * this.forward.x + this.vy * this.right.x;
+      const wz = this.vx * this.forward.z + this.vy * this.right.z;
+      /* +into = driving into the prop (velocity against the outward normal). */
+      const into = -(wx * nx + wz * nz);
+      if (into > 0.05) {
+        const rest = 0.12;
+        const nwx = wx + nx * into * (1 + rest);
+        const nwz = wz + nz * into * (1 + rest);
+        /* Solve car-frame (vx, vy) from world XZ using forward/right plan. */
+        const fx = this.forward.x, fz = this.forward.z;
+        const rx = this.right.x, rz = this.right.z;
+        const det = fx * rz - fz * rx;
+        if (Math.abs(det) > 1e-5) {
+          this.vx = (nwx * rz - nwz * rx) / det;
+          this.vy = (nwz * fx - nwx * fz) / det;
+        } else {
+          this.vx *= 0.2;
+          this.vy *= 0.2;
+        }
+        /* Crash damping — a solid hit nearly kills pace. */
+        const hard = clamp(into / 12, 0, 1);
+        this.vx *= lerp(0.5, 0.08, hard);
+        this.vy *= lerp(0.4, 0.05, hard);
+        this.r *= lerp(0.65, 0.2, hard);
+        this.lastImpact = Math.max(this.lastImpact, clamp(into / 10, 0.15, 1));
+      } else {
+        /* Scraping / resting against the prop. */
+        this.vx *= 0.9;
+        this.vy *= 0.82;
+        this.lastImpact = Math.max(this.lastImpact, 0.05);
+      }
+      hit = true;
+    }
+
+    if (hit) {
+      /* Re-seat on the heightfield after the XZ push so we do not float. */
+      const proj = track.project(this.pos, this.s);
+      const surf = this.surfaceAt(proj.s, proj.lat, _p);
+      this.pos.copy(surf).addScaledVector(_fC.up, CAR.rideHeight + this.height);
+      this.s = proj.s;
+      this.lat = proj.lat;
+      if (typeof track.normalAt === 'function') {
+        track.normalAt(this.pos.x, this.pos.z, this.up);
+      }
+    }
+    this._obsContact = hit;
   }
 
   /**

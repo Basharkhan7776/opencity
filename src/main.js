@@ -1,4 +1,4 @@
-/* REDROCK — open road.
+/* OPENCITY — open road.
  *
  * The rally stripped away: no stage, no rivals, no countdown, no finish.
  * Just the car, a flat road that never ends, and the same cel pipeline,
@@ -10,7 +10,7 @@
  * and the boot path in index.html depend on window.__game.
  */
 import * as THREE from 'three';
-import { FlatTrack, ROAD_WIDTH, LANE_LAT } from './flat/FlatTrack.js';
+import { FlatTrack, ROAD_WIDTH, INTER_X, WATER_LEVEL } from './flat/FlatTrack.js';
 import { buildFlatWorld } from './flat/FlatWorld.js';
 import { loadCarGLB } from './car/mesh.js';
 import { Car, MAX_RPM, steerLockAt } from './car/physics.js';
@@ -19,8 +19,15 @@ import { Driver } from './car/driver.js';
 import { Input } from './core/input.js';
 import { celMaterial } from './render/cel.js';
 import { CelPipeline } from './render/outline.js';
-import { Audio } from './audio/index.js';
 import { clamp } from './core/util.js';
+
+/* Silent audio stub — real Audio engine disabled for now. */
+const Audio = class {
+  start() {}
+  stop() {}
+  update() {}
+  impact() {}
+};
 
 /* The rally stage's light rig, moved over verbatim so the comic look
    survives the flat land. See the original main.js for the reasoning. */
@@ -44,13 +51,30 @@ const TIERS = {
    through these; #car=<name> picks the starting one. */
 const VEHICLES = [
   { name: 'Sports Sedan', url: '/assets/vehicle/sedan-sports.glb', perf: { power: 1.0, drag: 1.0 } },
-  { name: 'SUV', url: '/assets/vehicle/suv.glb', perf: { power: 0.72, drag: 1.0 } },
-  { name: 'Race', url: '/assets/vehicle/race.glb', perf: { power: 1.58, drag: 0.95 } },
   { name: 'Sedan', url: '/assets/vehicle/sedan.glb', perf: { power: 0.69, drag: 1.0 } },
-  { name: 'Police', url: '/assets/vehicle/police.glb', perf: { power: 0.92, drag: 1.0 } },
   { name: 'Hatchback', url: '/assets/vehicle/hatchback-sports.glb', perf: { power: 0.59, drag: 1.0 } },
+  { name: 'SUV', url: '/assets/vehicle/suv.glb', perf: { power: 0.72, drag: 1.0 } },
+  { name: 'Luxury SUV', url: '/assets/vehicle/suv-luxury.glb', perf: { power: 0.88, drag: 1.05 } },
+  { name: 'Race', url: '/assets/vehicle/race.glb', perf: { power: 1.58, drag: 0.95 } },
+  { name: 'Future Race', url: '/assets/vehicle/race-future.glb', perf: { power: 1.72, drag: 0.9 } },
+  { name: 'Police', url: '/assets/vehicle/police.glb', perf: { power: 0.92, drag: 1.0 } },
   { name: 'Taxi', url: '/assets/vehicle/taxi.glb', perf: { power: 0.49, drag: 1.0 } },
   { name: 'Van', url: '/assets/vehicle/van.glb', perf: { power: 0.44, drag: 1.0 } },
+  { name: 'Delivery', url: '/assets/vehicle/delivery.glb', perf: { power: 0.4, drag: 1.15 } },
+  { name: 'Delivery Flat', url: '/assets/vehicle/delivery-flat.glb', perf: { power: 0.42, drag: 1.1 } },
+  { name: 'Truck', url: '/assets/vehicle/truck.glb', perf: { power: 0.55, drag: 1.35 } },
+  { name: 'Flatbed Truck', url: '/assets/vehicle/truck-flat.glb', perf: { power: 0.52, drag: 1.3 } },
+  { name: 'Garbage Truck', url: '/assets/vehicle/garbage-truck.glb', perf: { power: 0.38, drag: 1.45 } },
+  { name: 'Firetruck', url: '/assets/vehicle/firetruck.glb', perf: { power: 0.7, drag: 1.4 } },
+  { name: 'Ambulance', url: '/assets/vehicle/ambulance.glb', perf: { power: 0.75, drag: 1.2 } },
+  { name: 'Tractor', url: '/assets/vehicle/tractor.glb', perf: { power: 0.35, drag: 1.25 } },
+  { name: 'Tractor Shovel', url: '/assets/vehicle/tractor-shovel.glb', perf: { power: 0.32, drag: 1.3 } },
+  { name: 'Police Tractor', url: '/assets/vehicle/tractor-police.glb', perf: { power: 0.36, drag: 1.25 } },
+  { name: 'Kart Oobi', url: '/assets/vehicle/kart-oobi.glb', perf: { power: 0.85, drag: 0.85 } },
+  { name: 'Kart Oodi', url: '/assets/vehicle/kart-oodi.glb', perf: { power: 0.88, drag: 0.85 } },
+  { name: 'Kart Ooli', url: '/assets/vehicle/kart-ooli.glb', perf: { power: 0.9, drag: 0.84 } },
+  { name: 'Kart Oopi', url: '/assets/vehicle/kart-oopi.glb', perf: { power: 0.86, drag: 0.85 } },
+  { name: 'Kart Oozi', url: '/assets/vehicle/kart-oozi.glb', perf: { power: 0.92, drag: 0.83 } },
 ];
 
 class Game {
@@ -101,23 +125,42 @@ class Game {
     });
     this.scene.add(world.root);
     this.sun = world.sun;
-    this.sun.position.copy(SUN_OFFSET);
-    this.sun.target.position.set(0, 0, 0);
+    /* Trees/rocks + city buildings/fences: colliders now; meshes stream in. */
+    if (world.obstacles) this.track.setObstacles(world.obstacles);
+    else if (world.vegetation) this.track.setObstacles(world.vegetation.grid);
+    world.loadCity?.().catch(err => console.warn('city', err));
+    world.loadVegetation?.().catch(err => console.warn('vegetation', err));
 
     this.buildCars();
+    /* Sun follows the car; aim it at the island centre for the first frame. */
+    this.sun.position.copy(this.player.pos).add(SUN_OFFSET);
+    this.sun.target.position.copy(this.player.pos);
     this.sun.target.updateMatrixWorld();
 
     this.input = new Input();
     this.chase = new ChaseCamera(this.camera);
 
-    /* Mouse look: moving the mouse orbits the camera around the car. The
-       deltas accumulate into an absolute angle, so the camera holds whatever
-       angle the mouse last moved it to. */
+    /* Mouse look: orbits around the vehicle middle (see ChaseCamera). Pointer
+       lock keeps the cursor off-screen while driving; ESC pause restores it. */
     this.lookYaw = 0;
     this.lookPitch = 0;
+    this._pointerLocked = false;
+    this._setCursorVisible(false);
+    this.canvas.addEventListener('click', () => {
+      if (!this.paused) this._requestPointerLock();
+    });
+    document.addEventListener('pointerlockchange', () => {
+      this._pointerLocked = document.pointerLockElement === this.canvas;
+      /* Cursor only while the pause menu is open. While driving it stays
+         hidden even if the browser briefly drops pointer lock (Esc once). */
+      this._setCursorVisible(this.paused);
+    });
     addEventListener('mousemove', e => {
+      if (this.paused) return;
+      /* Prefer pointer-lock deltas; fall back to raw movement if unlocked. */
+      if (e.movementX === 0 && e.movementY === 0) return;
       this.lookYaw += e.movementX * 0.004;
-      this.lookPitch = clamp(this.lookPitch + e.movementY * 0.003, -0.6, 0.6);
+      this.lookPitch = clamp(this.lookPitch + e.movementY * 0.003, -0.85, 0.55);
     });
 
     this.pipeline = new CelPipeline(this.renderer, this.scene, this.camera, {
@@ -149,7 +192,8 @@ class Game {
 
   buildCars() {
     this.player = new Car(this.track, { palette: 0, perf: VEHICLES[0].perf });
-    this.player.placeAt(20, LANE_LAT);
+    /* Spawn on the island flats at map centre. */
+    this.player.placeAt(INTER_X, 0);
 
     this.vehicleViews = new Map();
     this.vehiclesLoading = new Map();
@@ -244,7 +288,10 @@ class Game {
     if (n >= MAX_SUBSTEPS) this._simAcc = 0;
     const alpha = this._simAcc / SUBSTEP;
 
-    p.applyTo(this.playerView, alpha);
+    /* Drove into the sea — snap back to the island centre. */
+    if (this._isSubmerged(p)) this.teleportToCenter();
+
+    if (this.playerView) p.applyTo(this.playerView, alpha);
 
     this.pipeline.update(dt, { speed: p.speed });
     if (p.lastImpact > 0.02) {
@@ -291,16 +338,62 @@ class Game {
 
   togglePause() {
     this.paused = !this.paused;
-    if (this.paused) this.audio.stop();
-    else this.audio.start();
+    if (this.paused) {
+      this.audio.stop();
+      this._exitPointerLock();
+      this._setCursorVisible(true);
+    } else {
+      this.audio.start();
+      this._setCursorVisible(false);
+      this._requestPointerLock();
+    }
+  }
+
+  /** Hide system cursor while driving; show it on the pause menu. */
+  _setCursorVisible(visible) {
+    const v = visible ? 'default' : 'none';
+    document.body.style.cursor = v;
+    document.documentElement.style.cursor = v;
+    if (this.canvas) this.canvas.style.cursor = v;
+  }
+
+  _requestPointerLock() {
+    if (this.paused) return;
+    if (document.pointerLockElement === this.canvas) return;
+    this.canvas.requestPointerLock?.()?.catch?.(() => {});
+  }
+
+  _exitPointerLock() {
+    if (document.pointerLockElement) document.exitPointerLock?.();
   }
 
   respawn() {
     this.resetSimClock();
+    this.teleportToCenter();
+  }
+
+  /** Map centre of the island flats (same as spawn). */
+  teleportToCenter() {
     const p = this.player;
-    p.placeAt(clamp(p.s - 12, 0, this.track.roadEnd), LANE_LAT);
+    p.placeAt(INTER_X, 0);
     p.vertVel = 0; p.height = 0;
     this.chase.started = false;
+  }
+
+  /**
+   * True when the car body is in the water — either below sea level or sitting
+   * on seafloor under the waterline. Used to teleport back to the island centre.
+   */
+  _isSubmerged(p) {
+    const water = this.track.waterLevel ?? WATER_LEVEL;
+    /* Chassis low enough that the ride is underwater. */
+    if (p.pos.y < water + 0.15) return true;
+    /* Standing on land that itself is below the waterline (beach/seafloor). */
+    if (typeof this.track.heightAt === 'function') {
+      const ground = this.track.heightAt(p.pos.x, p.pos.z);
+      if (ground < water - 0.25 && p.height < 1.5) return true;
+    }
+    return false;
   }
 
   resetSimClock() { this._simAcc = 0; }
@@ -357,13 +450,25 @@ class Game {
     document.getElementById('boot')?.classList.add('gone');
     this._raf = requestAnimationFrame(t => this.frame(t));
   }
-  setPaused(p) { this.paused = p; }
+  setPaused(p) {
+    const next = !!p;
+    if (next === this.paused) return;
+    this.paused = next;
+    if (this.paused) {
+      this._exitPointerLock();
+      this._setCursorVisible(true);
+    } else {
+      this._setCursorVisible(false);
+      this._requestPointerLock();
+    }
+  }
   renderOnce() { this.pipeline.render(); }
 
   goTo(t) {
     this.resetSimClock();
     this.s = clamp(t, 0, 1) * this.track.length;
-    this.player.placeAt(clamp(this.s, 0, this.track.length - 1), LANE_LAT);
+    /* On the island, goTo still places by s (world X) at lat 0. */
+    this.player.placeAt(clamp(this.s, 0, this.track.length - 1), 0);
     this.player.applyTo(this.playerView);
     this.chase.started = false;
     this.chase.update(this.player, 1 / 60, {});

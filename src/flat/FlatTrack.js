@@ -1,18 +1,21 @@
-/* FlatTrack — an endless, straight, flat road.
+/* FlatTrack — free-roam surface for the island playground.
  *
  * Satisfies the surface interface Car.physics.js reads off `this.track`
  * (frameAt, project, rampHeight, rampCrossed, padCrossed, boostWindow,
- * roadEnd, finishS) with a road that never turns and never ends. The car
- * drives along +X at y = 0; arc length `s` is wrapped modulo LOOP so the
- * simulation stays near the origin forever — invisible, because the world is
- * featureless. The crown cross-section is EDGE_DROP's, matching the visual
- * road built by buildFlatWorld, so the tyres sit on the mesh they are drawn
- * on.
+ * roadEnd, finishS) with a road that never turns and never ends. Arc length
+ * `s` maps to world X (wrapped by LOOP for the endless sim), `lat` to world Z.
+ *
+ * Heights and normals come from Island.heightAt / normalAt — the same
+ * functions that build the mesh — so the car drives on top of the island
+ * rather than through it.
  */
 import * as THREE from 'three';
 import { Frame, STEP, EDGE_DROP } from '../world/track.js';
+import {
+  heightAt, normalAt, CENTER, WATER_LEVEL, PLAZA_HALF, INTER_X,
+} from './Island.js';
 
-export const ROAD_WIDTH = 11;     // metres of tarmac
+export const ROAD_WIDTH = 11;     // metres of tarmac (legacy interface width)
 export const LOOP = 6000;         // metres before s wraps — the "endless" part
 /* The driven road is a two-lane avenue (a cross seen from above) with a
    footpath walking the centre line; the median divides the tarmac in two
@@ -25,7 +28,7 @@ const wrap = s => ((s % LOOP) + LOOP) % LOOP;
 
 export class FlatTrack {
   constructor() {
-    this.freeRoam = true;         // no walls, no berm — the whole plaza is drivable
+    this.freeRoam = true;         // no walls, no berm — the whole island is drivable
     this.ramps = [];
     this.finishS = Infinity;      // the road never ends, so the car never does
     this.roadEnd = LOOP;
@@ -36,12 +39,27 @@ export class FlatTrack {
     this.count = Math.round(LOOP / STEP);
     this.startY = 0;
     this.endY = 0;
+
+    /* Island surface — shared with the mesh. */
+    this.heightAt = heightAt;
+    this.normalAt = normalAt;
+    this.waterLevel = WATER_LEVEL;
+    this.center = CENTER;
+    this.plazaHalf = PLAZA_HALF;
+    this.interX = INTER_X;
+
+    /* Prop colliders (trees, rocks, bushes). Filled by setObstacles once the
+       vegetation plan is ready — empty until then, so free-roam still works. */
+    this.obstacles = null;
+    this._obsHit = [];
+
     /* A frames array in the same shape Track's has, for anything that reads
        `frames` directly. The physics never does — it goes through frameAt. */
     this.frames = [];
     for (let i = 0; i <= this.count; i++) {
       const f = new Frame();
-      f.pos.set(i * STEP, 0, 0);
+      const x = i * STEP;
+      f.pos.set(x, heightAt(x, 0), 0);
       f.tan.set(1, 0, 0);
       f.right.set(0, 0, 1);
       f.up.set(0, 1, 0);
@@ -57,7 +75,9 @@ export class FlatTrack {
   frameAt(s, out = null) {
     const w = wrap(s);
     const f = out || new Frame();
-    f.pos.set(w, 0, 0);
+    /* Frame sits at lat=0 on the X axis; free-roam physics re-samples height
+       and normal under the car via surfaceAt / normalAt. */
+    f.pos.set(w, heightAt(w, 0), 0);
     f.tan.set(1, 0, 0);
     f.right.set(0, 0, 1);
     f.up.set(0, 1, 0);
@@ -69,7 +89,8 @@ export class FlatTrack {
   }
 
   pointAt(s, lat = 0, out = new THREE.Vector3()) {
-    return out.set(wrap(s), 0, lat);
+    const x = wrap(s);
+    return out.set(x, heightAt(x, lat), lat);
   }
 
   /** Where on the road `p` is, as (s, lat). The inverse of pointAt. */
@@ -84,12 +105,27 @@ export class FlatTrack {
     };
   }
 
-  /* No ramps, no pads, no boost windows — the whole featureless surface is
-     tarmac, so every one of these is the neutral answer. */
+  /* No ramps, no pads, no boost windows — open island. */
   rampHeight() { return 0; }
   rampCrossed() { return null; }
   padCrossed() { return null; }
   boostWindow() { return false; }
+
+  /**
+   * Attach a spatial obstacle grid (from Vegetation.createVegetationSystem).
+   * Physics queries this every free-roam substep for tree/rock hits.
+   */
+  setObstacles(grid) {
+    this.obstacles = grid;
+  }
+
+  /**
+   * Nearby colliders for a circle at (x,z). Returns a reused array.
+   */
+  queryObstacles(x, z, radius) {
+    if (!this.obstacles) return null;
+    return this.obstacles.query(x, z, radius, this._obsHit);
+  }
 }
 
-export { EDGE_DROP };
+export { EDGE_DROP, heightAt, normalAt, CENTER, WATER_LEVEL, PLAZA_HALF, INTER_X };

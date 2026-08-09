@@ -1,4 +1,4 @@
-/* REDROCK — sound.
+/* OPENCITY — sound.
  *
  * Zero assets, like everything else here: no files, no samples, no encoded
  * blobs. Every sound is built at runtime out of oscillators, Float32Arrays of

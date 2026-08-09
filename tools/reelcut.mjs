@@ -32,7 +32,7 @@ const FPS = 60;
 const REEL = path.join(ROOT, 'out', 'reel');
 const FRAMES = path.join(REEL, 'frames');
 const SEG = path.join(REEL, 'segments');
-const OUT = path.join(REEL, 'redrock.mp4');
+const OUT = path.join(REEL, 'OPENCITY.mp4');
 
 const plan = JSON.parse(fs.readFileSync(PLAN, 'utf8'));
 fs.mkdirSync(SEG, { recursive: true });

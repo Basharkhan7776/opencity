@@ -162,7 +162,7 @@ export async function run(opts, body) {
     width = 1600, height = 900, hash = 'manual',
     cpu = process.argv.includes('--cpu'),
     timeout = 120_000,
-    url: externalUrl = process.env.REDROCK_URL || null,
+    url: externalUrl = process.env.OPENCITY_URL || null,
     /* Which global says the page is up, and whether to start its loop. A tool
        with its own page (tools/hud.html, tools/gamut.html) has neither
        __game nor a game loop, and waiting for them burns the full timeout. */

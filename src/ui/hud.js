@@ -1674,7 +1674,7 @@ export class Hud {
        for in screen-space size. 96u is 0.133 of the short side, so the word
        is 830 device px across at 1600x900 and 664 at 1280x720, or a little
        over half the frame width at both. */
-    const NAME = 'REDROCK';
+    const NAME = 'OPENCITY';
     const nameSize = 84 * u;
     const weight = 1.35;
     const nameW = textWidth(NAME, nameSize, 0.5);
@@ -1721,7 +1721,7 @@ export class Hud {
          because the badge is red for every position but first and the
          countdown is red while it counts — on this palette red is the plate
          colour that carries a statement rather than a result, and the game is
-         called REDROCK, so it is also the only colour the word can sit on
+          called OPENCITY, so it is also the only colour the word can sit on
          without arguing with itself. */
       const slab = (ox, oy, fill) => {
         g.beginPath();
@@ -2207,7 +2207,7 @@ export class Hud {
       /* The instruction, on the title screen's slab — same parallelogram, same
          offset print shadow, same red, same cream caps. A player who rotates
          and lands on the title sees the word they just read change into
-         REDROCK on the identical object, which is the cheapest possible way of
+          OPENCITY on the identical object, which is the cheapest possible way of
          saying that this screen was part of the game and not an error page. */
       const by = phH + 40 * k + gap;
       const bx = (W - bw - skew) / 2;

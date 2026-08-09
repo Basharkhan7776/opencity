@@ -18,6 +18,6 @@ srv.listen(PORT, () => {
   // setImmediate, not a direct call: the unref is another 'listening' listener
   // and it is registered after this one, so re-ref'ing inline is undone again.
   setImmediate(() => srv.ref());
-  console.log(`redrock → http://localhost:${PORT}/`);
+  console.log(`OPENCITY → http://localhost:${PORT}/`);
 });
 process.on('SIGINT', () => { srv.close(); process.exit(130); });

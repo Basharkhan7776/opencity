@@ -19,7 +19,7 @@ const FILED = [
   { seed: 22, run: 'kfsweep', pre: 40, shots: 'shots/r2f-22' },
   { seed: 1, run: 'kfshot-1', pre: 120, shots: 'shots/r2f-1' },
   { seed: 40, run: 'kfshot-40', pre: 90, shots: 'shots/r2f-40' },
-  { seed: '22 (pre-fix build, C:/Code/redrock-critic)', run: 'kfsweep-pre-fix', pre: 40, shots: 'shots/r2fpre-22' },
+  { seed: '22 (pre-fix build, C:/Code/OPENCITY-critic)', run: 'kfsweep-pre-fix', pre: 40, shots: 'shots/r2fpre-22' },
 ];
 
 const lines = [];

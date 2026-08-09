@@ -1,5 +1,5 @@
 {
-  "name": "redrock",
+  "name": "opencity",
   "version": "1.0.0",
   "description": "Cel-shaded downhill rally. Procedural everything, zero external assets.",
   "main": "index.js",

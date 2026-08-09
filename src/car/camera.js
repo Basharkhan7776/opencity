@@ -464,12 +464,18 @@ export class ChaseCamera {
     if (this.orbitYaw !== 0) _boomDir.applyAxisAngle(UP, this.orbitYaw);
 
     _up.copy(car.up).lerp(UP, 0.45).normalize();
-    _p.copy(at).addScaledVector(_boomDir, -back).addScaledVector(_up, high);
+    /* Vehicle middle — pivot for mouse orbit so the car stays the reference
+       point instead of the road ahead. Roughly body centre above the chassis. */
+    const bodyLift = 0.85;
+    _head.copy(at).addScaledVector(_up, bodyLift);
+
+    /* Place the boom relative to the vehicle middle, then pitch around it. */
+    _p.copy(_head).addScaledVector(_boomDir, -back).addScaledVector(_up, high - bodyLift);
     if (this.orbitPitch !== 0) {
       _right.crossVectors(_boomDir, _up).normalize();
-      _off.subVectors(_p, at);
+      _off.subVectors(_p, _head);
       _off.applyAxisAngle(_right, this.orbitPitch);
-      _p.copy(at).add(_off);
+      _p.copy(_head).add(_off);
     }
 
     /* Never let the camera drop through the road on a crest. */
@@ -478,7 +484,12 @@ export class ChaseCamera {
       _p.addScaledVector(car.up, surfaceGuard.dot(car.up) - _p.dot(car.up));
     }
 
+    /* Default chase looks down the road; free-look (mouse orbit) locks the
+       aim on the vehicle middle so the car is always the centre of rotation. */
+    const orbitAmt = Math.hypot(this.orbitYaw, this.orbitPitch);
+    const orbitBlend = smoothstep(0.02, 0.22, orbitAmt);
     _look.copy(at).addScaledVector(_dir, lerp(9, 17, fast)).addScaledVector(_up, 1.5);
+    _look.lerp(_head, orbitBlend);
 
     if (!this.started) {
       this.pos.copy(_p); this.look.copy(_look); this.started = true;
@@ -486,12 +497,14 @@ export class ChaseCamera {
     }
 
     /* Position is chased hard enough to stay tight, the look-at target softly
-       enough that a kerb strike does not whip the horizon. */
+       enough that a kerb strike does not whip the horizon — except while
+       orbiting, when the look sticks hard to the vehicle middle. */
     const posRate = lerp(7.5, 12, fast);
     this.pos.x = approach(this.pos.x, _p.x, posRate, dt);
     this.pos.y = approach(this.pos.y, _p.y, posRate * 0.8, dt);
     this.pos.z = approach(this.pos.z, _p.z, posRate, dt);
-    this.look.lerp(_look, 1 - Math.exp(-9 * dt));
+    const lookRate = lerp(9, 18, orbitBlend);
+    this.look.lerp(_look, 1 - Math.exp(-lookRate * dt));
     this.up.lerp(_up, 1 - Math.exp(-5 * dt)).normalize();
 
     /* After the damping, not before it. Colliding the *target* leaves the

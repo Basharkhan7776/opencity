@@ -35,7 +35,7 @@ export const KIT = () => {
 
   const pad = {
     index: 0,
-    id: 'redrock synthetic pad (standard mapping)',
+    id: 'OPENCITY synthetic pad (standard mapping)',
     mapping: 'standard',
     connected: true,
     timestamp: 0,
