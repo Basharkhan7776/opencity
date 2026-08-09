@@ -1,8 +1,8 @@
 /* Procedural island city — scale matched to the vehicle, continuous roads.
  *
  * Vehicle ref (CAR): length 4.9 m, width 2.16 m.
- *   Houses    ≈ 1.5 × vehicle linear size
- *   Buildings ≈ 3.0 × vehicle linear size
+ *   Houses    ≈ 3.75 × vehicle linear size
+ *   Buildings ≈ 7.5  × vehicle linear size
  *   Skyscrapers a bit larger footprint, taller
  *
  * Roads are a continuous centerline graph extruded into ribbons (CityRoads),
@@ -11,8 +11,8 @@
 import { rng, rand } from '../core/rng.js';
 import { clamp } from '../core/util.js';
 import {
-  heightAt, coastAt, mountainFactor, CENTER, WATER_LEVEL,
-  METRO_R, RESIDENTIAL_R, ISLAND_R,
+  heightAt, normalAt, coastAt, mountainFactor, CENTER, WATER_LEVEL,
+  METRO_R, RESIDENTIAL_R, ISLAND_R, PEAKS, inCity,
 } from './Island.js';
 
 export const CITY_SEED = 42;
@@ -22,19 +22,18 @@ export const SPAWN_CLEAR = 55;
 export const VEHICLE_LEN = 4.9;
 
 /* Kenney models are ~2 units wide/deep in local space after bake. */
-const MODEL_SPAN = 2;
+export const MODEL_SPAN = 2;
 
 /** Linear scale so mesh size ≈ k × vehicle length. */
-export const HOUSE_SCALE = (1.5 * VEHICLE_LEN) / MODEL_SPAN;      // ~3.675 → ~7.4 m
-export const BUILDING_SCALE = (3.0 * VEHICLE_LEN) / MODEL_SPAN;   // ~7.35  → ~14.7 m
-export const SKY_SCALE = (3.6 * VEHICLE_LEN) / MODEL_SPAN;        // ~8.8   → ~17.6 m base
-export const FENCE_SCALE = HOUSE_SCALE * 0.55;
+export const HOUSE_SCALE = (1.5 * VEHICLE_LEN * 3) / MODEL_SPAN;        // ~3.675 ×3 → ~22 m
+export const BUILDING_SCALE = (3.0 * VEHICLE_LEN * 1.4) / MODEL_SPAN;   // ~7.35  ×1.4 → ~20.6 m
+export const SKY_SCALE = (3.6 * VEHICLE_LEN * 1.4) / MODEL_SPAN;        // ~8.8   ×1.4 → ~24.7 m base
 
 /* Road widths and grid spacing (metres). */
 export const LANE1_W = 5.5;    // one car + margin
 export const LANE2_W = 11;     // two-lane metro
-export const METRO_STEP = 36;  // centreline spacing (fits 3× buildings)
-export const RES_STEP = 28;    // residential street spacing
+export const METRO_STEP = 46;  // centreline spacing (fits 3× buildings)
+export const RES_STEP = 40;    // residential street spacing (scaled for big houses)
 export const HOUSE_LOT = 18;   // offset from road centre to house centre
 
 const CITY_BUILDINGS = [
@@ -54,41 +53,49 @@ const SKYSCRAPERS = [
   '/assets/city/building-skyscraper-e.glb',
 ];
 const LOW_CITY = [
-  '/assets/city/low-detail-building-a.glb',
-  '/assets/city/low-detail-building-b.glb',
-  '/assets/city/low-detail-building-c.glb',
-  '/assets/city/low-detail-building-d.glb',
-  '/assets/city/low-detail-building-e.glb',
-  '/assets/city/low-detail-building-f.glb',
-  '/assets/city/low-detail-building-g.glb',
-  '/assets/city/low-detail-building-h.glb',
-  '/assets/city/low-detail-building-wide-a.glb',
-  '/assets/city/low-detail-building-wide-b.glb',
+  '/assets/city/building-a.glb', '/assets/city/building-b.glb',
+  '/assets/city/building-c.glb', '/assets/city/building-d.glb',
+  '/assets/city/building-e.glb', '/assets/city/building-f.glb',
+  '/assets/city/building-g.glb', '/assets/city/building-h.glb',
+  '/assets/city/building-i.glb', '/assets/city/building-j.glb',
+  '/assets/city/building-k.glb', '/assets/city/building-l.glb',
+  '/assets/city/building-m.glb', '/assets/city/building-n.glb',
 ];
 const HOUSES = 'abcdefghijklmnopqrstu'.split('').map(
   c => `/assets/house/building-type-${c}.glb`,
 );
-const FENCES = [
-  '/assets/house/fence.glb',
-  '/assets/house/fence-1x2.glb',
-  '/assets/house/fence-1x3.glb',
-  '/assets/house/fence-1x4.glb',
-  '/assets/house/fence-low.glb',
-];
+/* The bush hedge asset — the same low wide clump the forest uses, planted
+   shoulder-to-shoulder around house lots. */
+const BUSH = '/assets/forest/plant.glb';
 const LIGHTS = [
   '/assets/road/light-square.glb',
   '/assets/road/light-square-cross.glb',
 ];
 
+/* Per-model size boost for select metro buildings — these read small against
+   their neighbours, so they get a taller/wider footprint multiplier. */
+const BUILDING_BOOST = {
+  '/assets/city/building-c.glb': 1.4,
+  '/assets/city/building-e.glb': 1.35,
+  '/assets/city/building-j.glb': 1.5,
+  '/assets/city/building-k.glb': 1.4,
+  '/assets/city/building-l.glb': 1.35,
+  '/assets/city/building-m.glb': 1.25,
+  '/assets/city/building-n.glb': 1.5,
+};
+function buildingBoost(url) {
+  return BUILDING_BOOST[url] || 1;
+}
+
 function sitY(x, z) {
   return heightAt(x, z);
 }
 
-function addInst(list, url, x, z, yaw, sx, sy, sz, kind) {
+function addInst(list, url, x, z, yaw, sx, sy, sz, kind, banner = false) {
   list.push({
     url, x, y: sitY(x, z), z,
     yaw: yaw || 0, pitch: 0, roll: 0,
-    sx, sy, sz, kind,
+    sx, sy, sz, kind, banner,
   });
 }
 
@@ -284,19 +291,22 @@ export function planCity(seed = CITY_SEED) {
       if (!R.chance(0.78)) continue;
 
       let url, sc, rad, kind;
-      if (rr < 80 && R.chance(0.6)) {
+      /* Towers taper from a dense downtown core out through the inner ring:
+         ~85% of the core lots, ~50% of the next ring, then mid-rise. */
+      const skyChance = rr < 90 ? 0.85 : rr < 160 ? 0.5 : 0;
+      if (skyChance > 0 && R.chance(skyChance)) {
         url = R.pick(SKYSCRAPERS);
         sc = SKY_SCALE * R.f(0.92, 1.12);
         rad = sc * MODEL_SPAN * 0.42;
         kind = 'building';
       } else if (rr < 150 && R.chance(0.75)) {
         url = R.pick(CITY_BUILDINGS);
-        sc = BUILDING_SCALE * R.f(0.9, 1.1);
+        sc = BUILDING_SCALE * R.f(0.9, 1.1) * buildingBoost(url);
         rad = sc * MODEL_SPAN * 0.4;
         kind = 'building';
       } else {
         url = R.pick(LOW_CITY);
-        sc = BUILDING_SCALE * R.f(0.85, 1.05);
+        sc = BUILDING_SCALE * R.f(0.85, 1.05) * buildingBoost(url);
         rad = sc * MODEL_SPAN * 0.38;
         kind = 'building';
       }
@@ -305,7 +315,7 @@ export function planCity(seed = CITY_SEED) {
       const sy = kind === 'building' && url.includes('skyscraper')
         ? sc * R.f(1.15, 1.45)
         : sc;
-      addInst(placements, url, x, z, yaw, sc, sy, sc, kind);
+      addInst(placements, url, x, z, yaw, sc, sy, sc, kind, true);
       addCollider(colliders, x, z, rad, 'building');
     }
   }
@@ -325,23 +335,35 @@ export function planCity(seed = CITY_SEED) {
       const sc = HOUSE_SCALE * R.f(0.92, 1.12);
       const yaw = R.pick([0, Math.PI / 2, Math.PI, -Math.PI / 2]);
       const url = R.pick(HOUSES);
-      addInst(placements, url, x, z, yaw, sc, sc, sc, 'house');
+      addInst(placements, url, x, z, yaw, sc, sc, sc, 'house', true);
       addCollider(colliders, x, z, sc * MODEL_SPAN * 0.38, 'building');
 
-      /* Fences around lot — scaled to house. */
-      const fsc = FENCE_SCALE * R.f(0.9, 1.1);
+      /* Bush hedge around the lot, one gap for the drive. A run of plant.glb
+         clumps planted shoulder-to-shoulder on all four edges with the middle
+         of one edge left open. Every bush is a solid collider, so the car
+         bounces off the hedge and can only reach the house through the gap. */
       const off = sc * MODEL_SPAN * 0.55;
-      const fence = R.pick(FENCES);
-      const edges = [
-        { x: x, z: z + off, yaw: 0 },
-        { x: x, z: z - off, yaw: 0 },
-        { x: x + off, z: z, yaw: Math.PI / 2 },
-        { x: x - off, z: z, yaw: Math.PI / 2 },
+      const nPer = 5;
+      const sp = (2 * off) / nPer;
+      const open = R.i(0, 3);   /* edge with the drive gap */
+      const inw = [             /* jitter inward keeps the street side clean */
+        { x: 0, z: -1 }, { x: 0, z: 1 },
+        { x: -1, z: 0 }, { x: 1, z: 0 },
       ];
-      for (const e of edges) {
-        if (!R.chance(0.5)) continue;
-        addInst(placements, fence, e.x, e.z, e.yaw, fsc, fsc * 0.95, fsc, 'fence');
-        addCollider(colliders, e.x, e.z, fsc * 0.7, 'fence');
+      for (let e = 0; e < 4; e++) {
+        const horiz = e < 2;
+        const side = e % 2 === 0 ? 1 : -1;
+        for (let k = 0; k < nPer; k++) {
+          if (e === open && k >= 1 && k <= 3) continue;
+          const t = -off + (k + 0.5) * sp + R.f(-0.3, 0.3);
+          const bx = horiz ? x + t : x + side * off;
+          const bz = horiz ? z + side * off : z + t;
+          const d = R.f(0.1, 0.5);
+          const bs = R.f(1.0, 1.4);
+          addInst(placements, BUSH, bx + inw[e].x * d, bz + inw[e].z * d,
+            R.f(0, Math.PI * 2), bs, bs * R.f(1.15, 1.35), bs, 'fence');
+          addCollider(colliders, bx + inw[e].x * d, bz + inw[e].z * d, 0.9, 'fence');
+        }
       }
     }
   }
@@ -353,9 +375,144 @@ export function planCity(seed = CITY_SEED) {
     const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
     if (rr > METRO_R + 20) continue;
     if (!R.chance(0.55)) continue;
-    const sc = HOUSE_SCALE * 0.7;
+    const sc = HOUSE_SCALE * 1.2;
     const light = R.pick(LIGHTS);
     addInst(placements, light, n.x + 4, n.z + 4, 0, sc, sc, sc, 'light');
+  }
+
+  /* ---- Wild houses: beach cottages and mountain cabins ------------------ */
+  /* A second stream so the city layout above stays byte-for-byte stable. */
+  const W = rand(rng(seed * 7 + 3));
+  const HOUSES_SHORT = HOUSES.slice(0, 14);   // cottages read small-scale
+
+  /* Beach cottages: flat spots seaward of the coast road, above the waterline. */
+  let beachHouses = 0;
+  for (let a = 0; a < TAU && beachHouses < 16; a += 0.09) {
+    const dirX = Math.cos(a), dirZ = Math.sin(a);
+    /* Walk the beach band outward to find a dry, flat shelf. */
+    let spot = null;
+    for (let k = 0; k < 10; k++) {
+      const r = ISLAND_R * 0.8 + k * 14;
+      const x = CENTER.x + dirX * r;
+      const z = CENTER.z + dirZ * r;
+      const { rr, beachStart } = coastAt(x, z);
+      if (rr < beachStart) continue;
+      const y = heightAt(x, z);
+      if (y < WATER_LEVEL + 1.2 || y > 4.5) continue;
+      if (normalAt(x, z).y < 0.82) continue;
+      spot = { x, z, y };
+      break;
+    }
+    if (!spot) continue;
+    if (!W.chance(0.45)) continue;
+
+    const sc = HOUSE_SCALE * W.f(0.7, 0.95);
+    const url = W.pick(HOUSES_SHORT);
+    addInst(placements, url, spot.x, spot.z, W.pick([0, Math.PI / 2, Math.PI, -Math.PI / 2]),
+      sc, sc, sc, 'house', true);
+    addCollider(colliders, spot.x, spot.z, sc * MODEL_SPAN * 0.38, 'building');
+    beachHouses++;
+  }
+
+  /* Mountain cabins: a few per peak on the driveable lower slopes. */
+  let cabins = 0;
+  for (const peak of PEAKS) {
+    const want = 1 + W.i(0, 2);
+    for (let k = 0; k < want && cabins < 12; k++) {
+      const ang = W.f(0, TAU);
+      const d = peak.r * W.f(0.42, 0.7);
+      const x = peak.x + Math.cos(ang) * d;
+      const z = peak.z + Math.sin(ang) * d;
+      const y = heightAt(x, z);
+      if (y < WATER_LEVEL + 2 || y > 44) continue;
+      const m = mountainFactor(x, z);
+      if (m < 0.3 || m > 0.85) continue;
+      if (normalAt(x, z).y < 0.6) continue;
+      if (!W.chance(0.6)) continue;
+
+      const sc = HOUSE_SCALE * W.f(0.72, 0.92);
+      addInst(placements, W.pick(HOUSES_SHORT), x, z,
+        W.pick([0, Math.PI / 2, Math.PI, -Math.PI / 2]), sc, sc, sc, 'house', true);
+      addCollider(colliders, x, z, sc * MODEL_SPAN * 0.38, 'building');
+      cabins++;
+    }
+  }
+
+  /* ---- City + wild trees, random and big -------------------------------- */
+  const TREES = [
+    '/assets/house/tree-large.glb',
+    '/assets/house/tree-small.glb',
+  ];
+  const treeScale = () => W.f(7, 20) * (W.chance(0.12) ? W.f(1.2, 1.5) : 1);
+  const solidKinds = new Set(['building', 'house', 'fence']);
+  const nearSolid = (x, z, pad) => {
+    for (const c of colliders) {
+      if (!solidKinds.has(c.kind)) continue;
+      if (Math.hypot(x - c.x, z - c.z) < c.radius + pad) return true;
+    }
+    return false;
+  };
+  const plantTree = (x, z, kind = 'tree') => {
+    const y = heightAt(x, z);
+    if (y < WATER_LEVEL + 0.6) return;
+    if (normalAt(x, z).y < 0.55) return;
+    if (nearSolid(x, z, 3)) return;
+    const s = treeScale();
+    addInst(placements, W.pick(TREES), x, z, W.f(0, TAU), s, s, s, kind);
+    colliders.push({ x, z, radius: s * 0.12, kind: 'tree' });
+  };
+
+  /* Scattered yard trees in the residential ring (roads stay clear).
+     Quarter-step offsets so trees sit between house lots, not on top. */
+  const tN = Math.floor(RESIDENTIAL_R / RES_STEP);
+  for (let i = -tN; i <= tN; i++) {
+    for (let j = -tN; j <= tN; j++) {
+      const x = CENTER.x + (i + 0.75) * RES_STEP + W.f(-4, 4);
+      const z = CENTER.z + (j + 0.75) * RES_STEP + W.f(-4, 4);
+      const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
+      if (rr < METRO_R + 10 || rr > RESIDENTIAL_R - 16) continue;
+      if (mountainFactor(x, z) > 0.4) continue;
+      if (!W.chance(0.5)) continue;
+      plantTree(x, z);
+    }
+  }
+
+  /* Sparse street trees in metro blocks, quarter-step between buildings. */
+  const mN = Math.floor(METRO_R / METRO_STEP);
+  for (let i = -mN; i <= mN; i++) {
+    for (let j = -mN; j <= mN; j++) {
+      const x = CENTER.x + (i + 0.75) * METRO_STEP + W.f(-3, 3);
+      const z = CENTER.z + (j + 0.75) * METRO_STEP + W.f(-3, 3);
+      const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
+      if (rr > METRO_R - 20 || rr < 70) continue;
+      if (!W.chance(0.3)) continue;
+      plantTree(x, z);
+    }
+  }
+
+  /* Beach trees: along the sand band between the coast road and the sea. */
+  for (let a = 0; a < TAU; a += 0.03) {
+    if (!W.chance(0.5)) continue;
+    const x = CENTER.x + Math.cos(a) * ISLAND_R * W.f(0.79, 0.9);
+    const z = CENTER.z + Math.sin(a) * ISLAND_R * W.f(0.79, 0.9);
+    const { rr, beachStart } = coastAt(x, z);
+    if (rr < beachStart) continue;
+    plantTree(x, z);
+  }
+
+  /* Mountain trees: scattered around each peak below the snow line. */
+  for (const peak of PEAKS) {
+    for (let k = 0; k < 26; k++) {
+      const ang = W.f(0, TAU);
+      const d = peak.r * Math.sqrt(W.f());
+      const x = peak.x + Math.cos(ang) * d;
+      const z = peak.z + Math.sin(ang) * d;
+      const y = heightAt(x, z);
+      if (y < WATER_LEVEL + 2 || y > 42) continue;
+      if (mountainFactor(x, z) < 0.35) continue;
+      if (!W.chance(0.5)) continue;
+      plantTree(x, z);
+    }
   }
 
   return {

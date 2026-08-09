@@ -123,7 +123,9 @@ const DESERT_GRADE = Object.freeze({
    scribble. */
 const PRE_VERT = /* glsl */`
 varying vec3 vViewPos;
+varying vec2 vUv;
 void main() {
+  vUv = uv;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   vViewPos = mv.xyz;
   gl_Position = projectionMatrix * mv;
@@ -166,8 +168,17 @@ export const INK_BURST_CLASS = 7;
 const PRE_FRAG = /* glsl */`
 precision highp float;
 varying vec3 vViewPos;
+varying vec2 vUv;
 uniform float uInkId;
+/* Alpha-tested materials (trees, bushes, fences with cut-out textures) must
+   discard the same texels in the prepass as they do in the beauty pass, or the
+   normals buffer holds a solid silhouette where the colour buffer shows a
+   hole — and the composite then draws the hidden object's edges through the
+   front object. Sampled against the object's own map via onBeforeRender. */
+uniform sampler2D uAlphaMap;
+uniform float uAlphaTest;
 void main() {
+  if (uAlphaTest > 0.0 && texture2D(uAlphaMap, vUv).a < uAlphaTest) discard;
   vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
   gl_FragColor = vec4(n * 0.5 + 0.5 + vec3(uInkId * ${ID_SCALE}, 0.0, 0.0), -vViewPos.z);
 }`;
@@ -208,6 +219,8 @@ uniform float uWLandFar;
 uniform float uWShell;
 uniform float uWRail;
 uniform float uWOther;
+uniform float uWIsland;
+uniform float uWWater;
 uniform float uCliffCrease;
 
 uniform float uMottleAmp;
@@ -584,7 +597,21 @@ void main() {
      double-print a silhouette the depth term has already drawn. */
   float idDiff = step(0.5, abs(inkId(t0) - id)) + step(0.5, abs(inkId(t1) - id))
                + step(0.5, abs(inkId(t2) - id)) + step(0.5, abs(inkId(t3) - id));
+  /* The island ground and the sea carry no line of their own, and a class
+     boundary with them must not draw one either: without this, giving the
+     ground a separate class gives the whole road network a new contour
+     wherever it borders bare island. (The class weights already zero the
+     depth and crease terms on those surfaces; this is only about the ID
+     term, which fires from both sides of a boundary.) */
+  float groundNear = max(
+    max(classIs(id, 9.0), classIs(id, 8.0)),
+    max(max(classIs(inkId(t0), 9.0), classIs(inkId(t1), 9.0)),
+        max(classIs(inkId(t2), 9.0), classIs(inkId(t3), 9.0))));
+  groundNear = max(groundNear,
+    max(max(classIs(inkId(t0), 8.0), classIs(inkId(t1), 8.0)),
+        max(classIs(inkId(t2), 8.0), classIs(inkId(t3), 8.0))));
   float idEdge = min(idDiff, 1.0) * uIdEdge
+               * (1.0 - groundNear)
                * (1.0 - smoothstep(depthTh * 4.0, depthTh * 12.0, dd))
                * (1.0 - smoothstep(180.0, 460.0, d));
 
@@ -668,6 +695,8 @@ void main() {
                classIs(id, 3.0));
   classW = mix(classW, uWShell, classIs(id, 4.0));
   classW = mix(classW, uWRail,  classIs(id, 5.0));
+  classW = mix(classW, uWIsland, classIs(id, 9.0));
+  classW = mix(classW, uWWater,  classIs(id, 8.0));
   ink *= classW;
 
   /* Ink as a darkening of what it borders, rather than one colour.
@@ -728,6 +757,12 @@ const INK_CLASS = [
   [/^(landform|basin)/, 3],
   [/^(shell|wheel\d)/, 4],
   [/^guardrail$/, 5],
+  /* The island ground and the sea around it draw no line: the coastline would
+     otherwise rule a contour along the whole shore (near side from the land,
+     far side from the water), and both show up in close-up and at the
+     horizon. Zero weight keeps the shore as colour alone. */
+  [/^island$/, 9],
+  [/^water$/, 8],
   // Volumetric. Occludes other lines, draws none. See VOLUME_ID.
   [/^fx-unified-billows$/, 6],
   /* Deliberately no class for shore-foam, which was tried and reverted. The
@@ -823,7 +858,17 @@ export class CelPipeline {
 
     this.normalMat = new THREE.ShaderMaterial({
       vertexShader: PRE_VERT, fragmentShader: PRE_FRAG, side: THREE.DoubleSide,
-      uniforms: { uInkId: { value: 0 } },
+      uniforms: {
+        uInkId: { value: 0 },
+        /* Fallback: one white texel so sampler lookups outside a map read 1. */
+        uAlphaMap: { value: (() => {
+          const t = new THREE.DataTexture(
+            new Uint8Array([255, 255, 255, 255]), 1, 1, THREE.RGBAFormat);
+          t.needsUpdate = true;
+          return t;
+        })() },
+        uAlphaTest: { value: 0 },
+      },
     });
     /* The override material is one program shared by every object in the
        prepass, so the class has to be pushed in per draw. three calls this
@@ -834,6 +879,21 @@ export class CelPipeline {
       const id = inkClassOf(object);
       if (this.normalMat.uniforms.uInkId.value !== id) {
         this.normalMat.uniforms.uInkId.value = id;
+        this.normalMat.uniformsNeedUpdate = true;
+      }
+      /* Match the beauty pass's alpha test, so cut-out textures (trees,
+         bushes, fences) punch the same holes in the normals buffer. */
+      const src = object.material;
+      const want = src && src.alphaTest ? src.alphaTest : 0;
+      const uni = this.normalMat.uniforms;
+      if (uni.uAlphaTest.value !== want) {
+        uni.uAlphaTest.value = want;
+        uni.uAlphaMap.value = want > 0 && src.map
+          ? src.map
+          : this.normalMat.uniforms.uAlphaMap.value;
+        this.normalMat.uniformsNeedUpdate = true;
+      } else if (want > 0 && src.map && uni.uAlphaMap.value !== src.map) {
+        uni.uAlphaMap.value = src.map;
         this.normalMat.uniformsNeedUpdate = true;
       }
     };
@@ -883,6 +943,8 @@ export class CelPipeline {
         uWShell: { value: opts.wShell ?? 1.0 },
         uWRail: { value: opts.wRail ?? 0.55 },
         uWOther: { value: opts.wOther ?? 0.85 },
+        uWIsland: { value: opts.wIsland ?? 0 },
+        uWWater: { value: opts.wWater ?? 0 },
         uCliffCrease: { value: opts.cliffCrease ?? 0.45 },
         /* Swept against the variation it actually adds, differenced frame
            against frame so the band edges cancel and only the mottle is left:

@@ -6098,9 +6098,14 @@ function buildRouteLandmarks(field, seed, coast, rings, mats, existing) {
       mats.rotor));
   }
   if (beams.length) {
-    group.add(animateMaterialOnRender(
+    const beamMesh = animateMaterialOnRender(
       makeInstances(lightBeamGeometry(), mats.beam, beams, 'lighthouse-beams', false),
-      mats.beam));
+      mats.beam);
+    /* Additive and vertex-spun: the override material would draw the static
+       source quad into the normals buffer, inking a ghost sweep over the sea.
+       Must come after animateMaterialOnRender, which also owns onBeforeRender. */
+    skipOverridePass(beamMesh);
+    group.add(beamMesh);
   }
 
   schedule.sort((a, b) => a.t - b.t);

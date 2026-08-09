@@ -70,11 +70,6 @@ const VEHICLES = [
   { name: 'Tractor', url: '/assets/vehicle/tractor.glb', perf: { power: 0.35, drag: 1.25 } },
   { name: 'Tractor Shovel', url: '/assets/vehicle/tractor-shovel.glb', perf: { power: 0.32, drag: 1.3 } },
   { name: 'Police Tractor', url: '/assets/vehicle/tractor-police.glb', perf: { power: 0.36, drag: 1.25 } },
-  { name: 'Kart Oobi', url: '/assets/vehicle/kart-oobi.glb', perf: { power: 0.85, drag: 0.85 } },
-  { name: 'Kart Oodi', url: '/assets/vehicle/kart-oodi.glb', perf: { power: 0.88, drag: 0.85 } },
-  { name: 'Kart Ooli', url: '/assets/vehicle/kart-ooli.glb', perf: { power: 0.9, drag: 0.84 } },
-  { name: 'Kart Oopi', url: '/assets/vehicle/kart-oopi.glb', perf: { power: 0.86, drag: 0.85 } },
-  { name: 'Kart Oozi', url: '/assets/vehicle/kart-oozi.glb', perf: { power: 0.92, drag: 0.83 } },
 ];
 
 class Game {
@@ -114,7 +109,7 @@ class Game {
     /* No fog — this world has distance to look at (the whole playground is
        visible from a standstill), so nothing melts into the horizon. */
 
-    this.camera = new THREE.PerspectiveCamera(62, 1, 0.4, 20000);
+    this.camera = new THREE.PerspectiveCamera(62, 1, 0.4, 2600);
 
     /* The world. */
     this.track = new FlatTrack();
@@ -140,6 +135,17 @@ class Game {
     this.input = new Input();
     this.chase = new ChaseCamera(this.camera);
 
+    /* Free-fly camera: Ctrl+Shift+C toggles between the chase cam and a free
+       camera that can roam the whole map (WASD + Space/Shift). Toggling back
+       puts the car back at the island centre. */
+    this.fly = false;
+    addEventListener('keydown', e => {
+      if (e.ctrlKey && e.shiftKey && (e.code === 'KeyC' || e.key === 'C')) {
+        e.preventDefault();
+        this.toggleFly();
+      }
+    });
+
     /* Mouse look: orbits around the vehicle middle (see ChaseCamera). Pointer
        lock keeps the cursor off-screen while driving; ESC pause restores it. */
     this.lookYaw = 0;
@@ -159,8 +165,8 @@ class Game {
       if (this.paused) return;
       /* Prefer pointer-lock deltas; fall back to raw movement if unlocked. */
       if (e.movementX === 0 && e.movementY === 0) return;
-      this.lookYaw += e.movementX * 0.004;
-      this.lookPitch = clamp(this.lookPitch + e.movementY * 0.003, -0.85, 0.55);
+      this.lookYaw -= e.movementX * 0.004;
+      this.lookPitch = clamp(this.lookPitch - e.movementY * 0.003, -0.85, 0.55);
     });
 
     this.pipeline = new CelPipeline(this.renderer, this.scene, this.camera, {
@@ -270,6 +276,13 @@ class Game {
     if (this.input.pausePressed) this.togglePause();
     if (this.paused) return;
 
+    if (this.fly) {
+      this.flyStep(dt);
+      this.pipeline.update(dt, { speed: 0 });
+      this.hud.update(dt, { speed: 0, gear: 0 });
+      return;
+    }
+
     this.time += dt;
     if (this.input.resetPressed) this.respawn();
 
@@ -378,6 +391,68 @@ class Game {
     p.placeAt(INTER_X, 0);
     p.vertVel = 0; p.height = 0;
     this.chase.started = false;
+  }
+
+  /* ---- free-fly camera (Ctrl+Shift+C) -------------------------------- */
+
+  toggleFly() {
+    this.fly = !this.fly;
+    if (this.fly) {
+      /* Start where the chase camera currently is, facing the same way. */
+      const e = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
+      this.lookYaw = e.y;
+      this.lookPitch = e.x;
+      this.flySpeed = 60;
+      this._requestPointerLock();
+    } else {
+      this.teleportToCenter();
+      this.chase.started = false;
+      this.chase.update(this.player, 1 / 60, {
+        lookBack: false, orbitYaw: 0, orbitPitch: 0,
+      });
+    }
+  }
+
+  /** Free-roam camera: WASD move on the camera plane, Space up, Shift down. */
+  flyStep(dt) {
+    const i = this.input;
+    let fwd = 0, strafe = 0, up = 0;
+    if (i.held('throttle')) fwd += 1;
+    if (i.held('brake')) fwd -= 1;
+    if (i.held('left')) strafe -= 1;
+    if (i.held('right')) strafe += 1;
+    if (i.down.has('Space')) up += 1;
+    if (i.down.has('ShiftLeft') || i.down.has('ShiftRight')) up -= 1;
+
+    /* Camera-relative basis. Yaw on the ground plane, pitch in the air. */
+    const cp = Math.cos(this.lookPitch);
+    const fwdVec = new THREE.Vector3(
+      -Math.sin(this.lookYaw) * cp,
+      Math.sin(this.lookPitch),
+      -Math.cos(this.lookYaw) * cp,
+    );
+    const rightVec = new THREE.Vector3(
+      Math.cos(this.lookYaw), 0, -Math.sin(this.lookYaw),
+    );
+
+    /* Speed scales with distance from the map centre so the whole island is
+       reachable in reasonable time without being slow up close. */
+    const dist = this.camera.position.distanceTo(
+      this.player ? this.player.pos : new THREE.Vector3(),
+    );
+    const speed = Math.min(this.flySpeed * (1 + dist / 900), 400);
+    this.camera.position.addScaledVector(fwdVec, fwd * speed * dt);
+    this.camera.position.addScaledVector(rightVec, strafe * speed * dt);
+    this.camera.position.y += up * speed * dt;
+
+    this.camera.quaternion.setFromEuler(
+      new THREE.Euler(this.lookPitch, this.lookYaw, 0, 'YXZ'),
+    );
+
+    /* Sun follows the camera so shadows stay lit around the free view. */
+    this.sun.position.copy(this.camera.position).add(SUN_OFFSET);
+    this.sun.target.position.copy(this.camera.position);
+    this.sun.target.updateMatrixWorld();
   }
 
   /**
@@ -586,7 +661,7 @@ class Hud {
     ctx.textAlign = 'left';
     ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(240,230,216,0.55)';
-    ctx.fillText('WASD / ARROWS  drive   MOUSE  look   V  vehicle   R  reset   ESC  pause', 24, h - 20);
+    ctx.fillText('WASD / ARROWS  drive   MOUSE  look   V  vehicle   R  reset   ESC  pause   CTRL+SHIFT+C  fly cam', 24, h - 20);
 
     /* Current vehicle, bottom centre. */
     if (this.carName) {

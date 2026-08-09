@@ -5,6 +5,32 @@
  */
 import * as THREE from 'three';
 import { celMaterial } from '../render/cel.js';
+import { MODEL_SPAN } from './CityLayout.js';
+import { skipOverridePass } from '../fx/pass.js';
+
+/* Temporary: floating name banner above buildings/houses (asset file name). */
+function makeBannerTexture(name) {
+  const pad = 14;
+  const font = 'bold 56px monospace';
+  const c = document.createElement('canvas');
+  const g = c.getContext('2d');
+  g.font = font;
+  const w = Math.ceil(g.measureText(name).width) + pad * 2;
+  c.width = w;
+  c.height = 96;
+  g.font = font;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.strokeStyle = 'rgba(0,0,0,0.85)';
+  g.lineWidth = 12;
+  g.lineJoin = 'round';
+  g.strokeText(name, w / 2, 48);
+  g.fillStyle = '#ffe9a8';
+  g.fillText(name, w / 2, 48);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
 function bakeSceneGeometry(scene) {
   scene.updateMatrixWorld(true);
@@ -112,11 +138,21 @@ export async function buildCityMeshes(placements) {
       geo.translate(-midX, -baseY, -midZ);
       geo.computeBoundingBox();
       geo.computeBoundingSphere();
+      /* Normalise the footprint (max of width/depth) to the layout's assumed
+         MODEL_SPAN so a small-native model cannot render as a toy next to a
+         big-native one. Fences keep their native length variety. */
+      const kind = items[0].kind;
+      const fb = geo.boundingBox;
+      const foot = Math.max(fb.max.x - fb.min.x, fb.max.z - fb.min.z);
+      const norm = (kind === 'building' || kind === 'house') && foot > 1e-4
+        ? MODEL_SPAN / foot
+        : 1;
+      const protoHeight = fb.max.y - fb.min.y;
       if (map) {
         map.colorSpace = THREE.SRGBColorSpace;
         map.needsUpdate = true;
       }
-      proto = { geo, map };
+      proto = { geo, map, norm, protoHeight };
       cache.set(url, proto);
     }
 
@@ -139,13 +175,39 @@ export async function buildCityMeshes(placements) {
       const it = items[i];
       dummy.position.set(it.x, it.y, it.z);
       dummy.rotation.set(it.pitch || 0, it.yaw || 0, it.roll || 0);
-      dummy.scale.set(it.sx ?? 1, it.sy ?? 1, it.sz ?? 1);
+      const n = proto.norm || 1;
+      dummy.scale.set((it.sx ?? 1) * n, (it.sy ?? 1) * n, (it.sz ?? 1) * n);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     }
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
     root.add(mesh);
+
+    /* Temporary name banners above buildings/houses. */
+    if (items.some(it => it.banner)) {
+      const name = url.split('/').pop().replace(/\.glb$/, '');
+      const tex = makeBannerTexture(name);
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true }),
+      );
+      const span = MODEL_SPAN * (proto.norm || 1);
+      const unit = span * 0.9;
+      sprite.scale.set(tex.image.width / 96 * unit, unit, 1);
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (!it.banner) continue;
+        const h = proto.protoHeight * (it.sy ?? 1) * (proto.norm || 1);
+        const s = sprite.clone();
+        s.position.set(it.x, it.y + h + unit * 0.8, it.z);
+        /* Keep the banner out of the ink prepass: it is transparent in the
+           beauty pass, so a solid quad in the normals buffer turns into an
+           inked rectangle floating over whatever is behind it. */
+        skipOverridePass(s);
+        root.add(s);
+      }
+      tex.dispose();
+    }
   }));
 
   return root;

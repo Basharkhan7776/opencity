@@ -1,7 +1,7 @@
 {
   "name": "opencity",
   "version": "1.0.0",
-  "description": "Cel-shaded downhill rally. Procedural everything, zero external assets.",
+  "description": "OpenCity-open world car game with city and whole I land",
   "main": "index.js",
   "scripts": {
     "serve": "node tools/serve.mjs",
