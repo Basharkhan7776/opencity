@@ -55,6 +55,9 @@ const spotNoise = fbm2(SEED * 197 + 23, 2);    // clumpy grass spots
 export const ISLAND_R = PLAZA_HALF * 0.92;       // ~916 m
 export const BEACH_IN = 70;                     // metres of beach slope
 export const FLAT_R = 180;                      // central flats radius
+/* Coast ring road sits this far inside the beach band; the beach itself
+   starts there so the strip seaward of the road reads as sand, not grass. */
+export const COAST_ROAD_INSET = 24;
 
 /* City footprint — flattened plateau so continuous roads + buildings share
    height with free-roam physics. Radii sized for vehicle-relative buildings. */
@@ -80,12 +83,14 @@ export function inCity(x, z) {
   return cityFlatten(x, z) > 0.35;
 }
 
-/** Mountain peak sites — shared with vegetation scatter. */
+/** Mountain peak sites — shared with vegetation scatter. Sat just beyond the
+ *  city's flattening skirt (rr ≈ 600) so the summits rise fully instead of
+ *  being levelled by the plateau. */
 export const PEAKS = Object.freeze([
-  { x: CENTER.x + 320, z:  280, h: 58, r: 210 },
-  { x: CENTER.x - 380, z: -220, h: 72, r: 250 },
-  { x: CENTER.x +  90, z: -420, h: 48, r: 180 },
-  { x: CENTER.x - 150, z:  450, h: 40, r: 160 },
+  { x: CENTER.x + 480, z:  360, h: 98,  r: 210 },
+  { x: CENTER.x - 460, z: -380, h: 120, r: 250 },
+  { x: CENTER.x +  40, z: -600, h: 86,  r: 180 },
+  { x: CENTER.x - 220, z:  560, h: 74,  r: 160 },
 ]);
 
 /** Shoreline parameters at (x, z). */
@@ -133,9 +138,9 @@ export function heightAt(x, z) {
     const d = Math.hypot(x - p.x, z - p.z);
     const t = 1 - smoothstep(p.r * 0.15, p.r, d);
     if (t > 0) {
-      /* Soft dome + a little noise for rocky shoulder. */
-      const dome = t * t * (3 - 2 * t);
-      const rock = (detailNoise(x / 40, z / 40) - 0.4) * 6 * t;
+      /* Sharp peak (power falloff) + a little noise for rocky shoulder. */
+      const dome = Math.pow(t, 2.2);
+      const rock = (detailNoise(x / 40, z / 40) - 0.4) * 8 * t;
       mountain = Math.max(mountain, p.h * dome + rock);
     }
   }
@@ -144,9 +149,12 @@ export function heightAt(x, z) {
   /* Central pad slightly raised and very flat so spawn is clean. */
   inland = lerp(inland, 5.2 + roll * 0.15, flatMask);
 
-  /* Beach: land height lerps down through sea level across BEACH_IN metres. */
-  if (rr > beachStart) {
-    const t = smoothstep(beachStart, edge, rr);
+  /* Beach: starts at the coast ring road and lerps down through sea level
+     across BEACH_IN metres, so the whole strip between the road and the
+     shore slopes like a real beach instead of staying flat grass. */
+  const beach0 = beachStart - COAST_ROAD_INSET;
+  if (rr > beach0) {
+    const t = smoothstep(beach0, edge, rr);
     /* Beach shelf sits just above water at the inner edge of the band, then
        drops below for the last stretch so the waterline is legible. */
     const beachY = lerp(2.2, SEAFLOOR + 0.5, t);
@@ -208,8 +216,10 @@ export function landColorAt(x, z, out = new THREE.Color()) {
     return out.copy(BEACH).multiplyScalar(0.45);
   }
 
-  /* Beach band near the shore. */
-  const beachT = smoothstep(beachStart - 8, beachStart + BEACH_IN * 0.55, rr)
+  /* Beach band near the shore — sand starts just inside the coast road and
+     is fully saturated a few metres seaward of it. */
+  const beach0 = beachStart - COAST_ROAD_INSET;
+  const beachT = smoothstep(beach0 - 8, beach0 + 12, rr)
     * (1 - smoothstep(edge - 5, edge + 25, rr));
   /* Snow on high ground — peaks and upper ridges. */
   const snowT = smoothstep(38, 52, y);

@@ -48,8 +48,24 @@
     font: 500 12px/1.8 ui-sans-serif, system-ui, sans-serif;
     letter-spacing: .34em; text-transform: uppercase; color: #b8724f;
     background: #1b1015; transition: opacity .5s ease;
+    z-index: 10;
   }
   #boot.gone { opacity: 0; pointer-events: none; }
+  .boot-box { width: min(320px, 70vw); text-align: center; }
+  .boot-title {
+    font: 700 24px/1.2 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: .5em; text-transform: uppercase; color: #d89a6e;
+    margin-bottom: 20px; text-indent: .5em;
+  }
+  .boot-bar {
+    height: 6px; border-radius: 3px; background: #38232e; overflow: hidden;
+  }
+  #boot-fill {
+    height: 100%; width: 0%; border-radius: 3px;
+    background: linear-gradient(90deg, #b8724f, #e0a272);
+    transition: width .25s ease;
+  }
+  .boot-pct { margin-top: 12px; font: 500 12px/1.8 ui-sans-serif, system-ui, sans-serif; }
 </style>
 <script type="importmap">
 {
@@ -63,7 +79,13 @@
 <body>
 <canvas id="view"></canvas>
 <canvas id="hud"></canvas>
-<div id="boot">OPENCITY</div>
+<div id="boot">
+  <div class="boot-box">
+    <div class="boot-title">OPENCITY</div>
+    <div class="boot-bar"><div id="boot-fill"></div></div>
+    <div class="boot-pct" id="boot-pct">0%</div>
+  </div>
+</div>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

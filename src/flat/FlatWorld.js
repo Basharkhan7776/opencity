@@ -6,7 +6,7 @@ import { buildIslandMeshes, CENTER } from './Island.js';
 import { createVegetationSystem, buildVegetationMeshes, ObstacleGrid } from './Vegetation.js';
 import { createCitySystem } from './CityLayout.js';
 import { buildCityMeshes } from './CityTiles.js';
-import { buildRoadNetworkMesh } from './CityRoads.js';
+import { buildRoadNetworkMesh, buildRoadLift } from './CityRoads.js';
 
 /**
  * @returns {{root:THREE.Group, sun:THREE.DirectionalLight,
@@ -14,8 +14,9 @@ import { buildRoadNetworkMesh } from './CityRoads.js';
  *            vegetation: object,
  *            city: object,
  *            obstacles: ObstacleGrid,
- *            loadVegetation: () => Promise<void>,
- *            loadCity: () => Promise<void>}}
+ *            roadLift: ((x:number,z:number)=>number)|null,
+ *            loadVegetation: ({onProgress}?) => Promise<void>,
+ *            loadCity: ({onProgress}?) => Promise<void>}}
  */
 export function buildFlatWorld({ shadowSize = 4096, shadowDist = 46 } = {}) {
   const root = new THREE.Group();
@@ -27,12 +28,14 @@ export function buildFlatWorld({ shadowSize = 4096, shadowDist = 46 } = {}) {
 
   /* City plan first (roads + buildings). Continuous roads are sync meshes. */
   const city = createCitySystem();
+  let roadLift = null;
   if (city.graph) {
     const roads = buildRoadNetworkMesh(city.graph);
-    root.add(roads);
+    root.add(roads.root);
+    roadLift = buildRoadLift(city.graph, city.placements);
   }
 
-  const vegetation = createVegetationSystem();
+  const vegetation = createVegetationSystem(city.graph);
 
   const obstacles = new ObstacleGrid([
     ...vegetation.colliders,
@@ -40,19 +43,19 @@ export function buildFlatWorld({ shadowSize = 4096, shadowDist = 46 } = {}) {
   ]);
 
   let vegLoaded = false;
-  const loadVegetation = async () => {
+  const loadVegetation = async ({ onProgress } = {}) => {
     if (vegLoaded) return;
     vegLoaded = true;
-    const group = await buildVegetationMeshes(vegetation.placements);
+    const group = await buildVegetationMeshes(vegetation.placements, onProgress);
     root.add(group);
   };
 
   let cityLoaded = false;
-  const loadCity = async () => {
+  const loadCity = async ({ onProgress } = {}) => {
     if (cityLoaded) return;
     cityLoaded = true;
     /* Buildings / houses / fences / lights only — roads already in scene. */
-    const group = await buildCityMeshes(city.placements);
+    const group = await buildCityMeshes(city.placements, onProgress);
     root.add(group);
   };
 
@@ -84,7 +87,7 @@ export function buildFlatWorld({ shadowSize = 4096, shadowDist = 46 } = {}) {
 
   return {
     root, sun, fill,
-    vegetation, city, obstacles,
+    vegetation, city, obstacles, roadLift,
     loadVegetation, loadCity,
   };
 }

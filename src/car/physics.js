@@ -961,7 +961,11 @@ export class Car {
       let nz = oldZ + _d.z;
       let newGround = track.heightAt(nx, nz);
       const budget = MAX_LIFT * dt;
-      if (this.height <= 0.35 && newGround - oldGround > budget) {
+      /* Small steps — the 0.14 m road kerb — are driveable: the tires roll
+         over them, so the car can leave the road and climb back on. Only a
+         rise steeper than a curb (a wall, a cliff) clips the climb. */
+      const CURB = 0.22;
+      if (this.height <= 0.35 && newGround - oldGround > CURB) {
         let lo = 0, hi = 1;
         for (let i = 0; i < 8; i++) {
           const mid = (lo + hi) * 0.5;
@@ -1130,12 +1134,11 @@ export class Car {
   }
 
   /**
-   * Crash into free-roam props (trees and rocks — not bushes).
+   * Crash into free-roam props (trees, rocks and bushes).
    *
    * Each obstacle is a vertical cylinder in plan. On penetration: push the
    * car out, kill the velocity into the trunk, and raise lastImpact so audio
    * and camera shake fire. Solid enough that driving into a tree stops you.
-   * Bushes are omitted from the collider list in Vegetation.js.
    */
   _obstacles(_dt) {
     const track = this.track;
@@ -1148,8 +1151,6 @@ export class Car {
 
     let hit = false;
     for (const o of hits) {
-      /* Defensive: plants/bushes never stop the car even if present in the grid. */
-      if (o.kind === 'plant') continue;
       const dx = this.pos.x - o.x;
       const dz = this.pos.z - o.z;
       const dist = Math.hypot(dx, dz);

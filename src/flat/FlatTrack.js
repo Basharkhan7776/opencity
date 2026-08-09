@@ -40,8 +40,11 @@ export class FlatTrack {
     this.startY = 0;
     this.endY = 0;
 
-    /* Island surface — shared with the mesh. */
-    this.heightAt = heightAt;
+    /* Island surface — shared with the mesh. A roadLift (attached by
+       setRoadLift once the city plan is ready) lifts the physics onto the
+       raised road decks, so the car drives on the road mesh itself. */
+    this.roadLift = null;
+    this.heightAt = (x, z) => heightAt(x, z) + (this.roadLift ? this.roadLift(x, z) : 0);
     this.normalAt = normalAt;
     this.waterLevel = WATER_LEVEL;
     this.center = CENTER;
@@ -117,6 +120,15 @@ export class FlatTrack {
    */
   setObstacles(grid) {
     this.obstacles = grid;
+  }
+
+  /**
+   * Attach the road deck lift — a function (x, z) => metres above the island
+   * surface for the city road slabs. The car then rides ON the road mesh
+   * instead of clipping through it.
+   */
+  setRoadLift(fn) {
+    this.roadLift = fn;
   }
 
   /**

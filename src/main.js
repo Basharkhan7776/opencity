@@ -45,6 +45,15 @@ const TIERS = {
   high: { dpr: 1.0, shadow: 4096, shadowDist: 46 },
 };
 
+/* Sphere of visibility, centred on the player's vehicle: world chunks whose
+   bounding sphere intersects this radius render; beyond it everything is
+   fogged out and not drawn. The island is ~2 km across, so 1 km keeps the
+   near half crisp and melts the far side into haze. */
+const VIEW_RADIUS = 500;       // metres — asset render sphere around the car
+const FOG_NEAR = 300;           // fog starts this far from the camera
+const FOG_FAR = VIEW_RADIUS;    // fully fogged at the edge of the sphere
+const CAM_FAR = FOG_FAR + 100;  // camera far plane, just past the fog
+
 /* The player's garage. Each entry is a GLB from assets/vehicle/ which
    buildCarFromGLTF scales onto the physics platform, keeping the model's own
    baked track width so every vehicle runs a different tyre spacing. V cycles
@@ -106,10 +115,13 @@ class Game {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x8cc8e8);
-    /* No fog — this world has distance to look at (the whole playground is
-       visible from a standstill), so nothing melts into the horizon. */
+    /* Fog makes the render distance a sphere of visibility around the car:
+       everything past FOG_NEAR melts toward the sky colour and is gone by the
+       camera far plane, so nothing pops at the clip. The colour matches the
+       background so the horizon is seamless. */
+    this.scene.fog = new THREE.Fog(0x8cc8e8, FOG_NEAR, FOG_FAR);
 
-    this.camera = new THREE.PerspectiveCamera(62, 1, 0.4, 2600);
+    this.camera = new THREE.PerspectiveCamera(62, 1, 0.4, CAM_FAR);
 
     /* The world. */
     this.track = new FlatTrack();
@@ -123,8 +135,10 @@ class Game {
     /* Trees/rocks + city buildings/fences: colliders now; meshes stream in. */
     if (world.obstacles) this.track.setObstacles(world.obstacles);
     else if (world.vegetation) this.track.setObstacles(world.vegetation.grid);
-    world.loadCity?.().catch(err => console.warn('city', err));
-    world.loadVegetation?.().catch(err => console.warn('vegetation', err));
+    if (world.roadLift) this.track.setRoadLift(world.roadLift);
+    this.world = world;
+    this._assetsLoading = false;
+    this._scanWorldChunks();
 
     this.buildCars();
     /* Sun follows the car; aim it at the island centre for the first frame. */
@@ -509,6 +523,9 @@ class Game {
     this._acc += dt; this._frames++;
     if (this._acc > 0.5) { this.fps = this._frames / this._acc; this._acc = 0; this._frames = 0; }
     if (!this.paused) this.step(dt);
+    /* Sphere of visibility: hide world chunks outside VIEW_RADIUS of the car
+       before the frame is drawn, so distant assets aren't rendered at all. */
+    this._cullWorldChunks();
     /* Paused: no GL work at all, the compositor holds the last picture. */
     if (!this.paused) this.pipeline.render();
     if (this.hudOn) this.hud.draw(this.paused);
@@ -522,9 +539,70 @@ class Game {
     this._lastRaf = -1;
     this._vsync = Infinity; this._vsyncMin = Infinity; this._vsyncSeen = 0;
     this._vsyncSum = 0; this._vsyncN = 0; this._pending = 0;
-    document.getElementById('boot')?.classList.add('gone');
     this._raf = requestAnimationFrame(t => this.frame(t));
+    this.loadAssets();
   }
+
+  /**
+   * Loader — the single entry point for all world assets. Runs the city and
+   * vegetation loaders together, drives the boot bar with their progress, and
+   * hides the loading screen once every asset is in the scene.
+   */
+  async loadAssets() {
+    if (this._assetsLoading) return;
+    this._assetsLoading = true;
+    const w = this.world;
+    let a = 0, b = 0;
+    const bump = () => this._setLoadProgress((a + b) * 0.5);
+    const tasks = [];
+    if (w.loadCity) {
+      tasks.push(w.loadCity({ onProgress: f => { a = f; bump(); } })
+        .catch(err => console.warn('city', err)));
+    } else a = 1;
+    if (w.loadVegetation) {
+      tasks.push(w.loadVegetation({ onProgress: f => { b = f; bump(); } })
+        .catch(err => console.warn('vegetation', err)));
+    } else b = 1;
+    bump();
+    await Promise.all(tasks);
+    this._setLoadProgress(1);
+    this._scanWorldChunks();
+    document.getElementById('boot')?.classList.add('gone');
+  }
+
+  _setLoadProgress(frac) {
+    const fill = document.getElementById('boot-fill');
+    if (fill) fill.style.width = `${Math.round(frac * 100)}%`;
+    const pct = document.getElementById('boot-pct');
+    if (pct) pct.textContent = `${Math.round(frac * 100)}%`;
+  }
+
+  /* World chunks for the visibility sphere. Each entry carries its bounding
+     sphere in WORLD space (setFromObject folds in transforms and instances). */
+  _scanWorldChunks() {
+    const chunks = [];
+    const box = new THREE.Box3(), sph = new THREE.Sphere();
+    for (const o of this.world.root.children) {
+      if (!(o.isMesh || o.isGroup) || !o.children?.length && !o.isMesh) continue;
+      box.setFromObject(o);
+      const c = box.getBoundingSphere(sph);
+      chunks.push({ object: o, x: c.center.x, y: c.center.y, z: c.center.z, r: c.radius });
+    }
+    this.worldChunks = chunks;
+  }
+
+  _cullWorldChunks() {
+    const chunks = this.worldChunks;
+    if (!chunks || !chunks.length) return;
+    const px = this.player.pos.x, pz = this.player.pos.z;
+    for (let i = 0; i < chunks.length; i++) {
+      const c = chunks[i];
+      const dx = c.x - px, dz = c.z - pz;
+      const lim = VIEW_RADIUS + c.r;
+      c.object.visible = dx * dx + dz * dz <= lim * lim;
+    }
+  }
+
   setPaused(p) {
     const next = !!p;
     if (next === this.paused) return;

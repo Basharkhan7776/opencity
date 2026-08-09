@@ -12,8 +12,9 @@ import { rng, rand } from '../core/rng.js';
 import { clamp } from '../core/util.js';
 import {
   heightAt, normalAt, coastAt, mountainFactor, CENTER, WATER_LEVEL,
-  METRO_R, RESIDENTIAL_R, ISLAND_R, PEAKS, inCity,
+  METRO_R, RESIDENTIAL_R, ISLAND_R, PEAKS, inCity, COAST_ROAD_INSET,
 } from './Island.js';
+import { FOOT_W, DECK } from './CityRoads.js';
 
 export const CITY_SEED = 42;
 export const SPAWN_CLEAR = 55;
@@ -30,11 +31,19 @@ export const BUILDING_SCALE = (3.0 * VEHICLE_LEN * 1.4) / MODEL_SPAN;   // ~7.35
 export const SKY_SCALE = (3.6 * VEHICLE_LEN * 1.4) / MODEL_SPAN;        // ~8.8   ×1.4 → ~24.7 m base
 
 /* Road widths and grid spacing (metres). */
-export const LANE1_W = 5.5;    // one car + margin
-export const LANE2_W = 11;     // two-lane metro
+export const LANE1_W = 7;    // one car + margin
+export const LANE2_W = 14;     // two-lane metro
 export const METRO_STEP = 46;  // centreline spacing (fits 3× buildings)
 export const RES_STEP = 40;    // residential street spacing (scaled for big houses)
 export const HOUSE_LOT = 18;   // offset from road centre to house centre
+
+/* Metro block podiums: a grey plaza under each building, level with the
+   road footpath (deck height), with the building lifted a few cm above it. */
+export const PLATFORM_H = DECK;       // podium top = footpath top
+/* Podium footprint fits between the two footpaths of the surrounding roads
+   (46 − 2·9.45 m slab half) so it never sits on top of a footpath. */
+export const PLATFORM_SZ = METRO_STEP * 0.58;   // podium footprint per square
+export const BUILD_UPLIFT = 0.05;     // cm the building floats above the podium
 
 const CITY_BUILDINGS = [
   '/assets/city/building-a.glb', '/assets/city/building-b.glb',
@@ -91,11 +100,11 @@ function sitY(x, z) {
   return heightAt(x, z);
 }
 
-function addInst(list, url, x, z, yaw, sx, sy, sz, kind, banner = false) {
+function addInst(list, url, x, z, yaw, sx, sy, sz, kind, yAt) {
   list.push({
-    url, x, y: sitY(x, z), z,
+    url, x, y: yAt ?? sitY(x, z), z,
     yaw: yaw || 0, pitch: 0, roll: 0,
-    sx, sy, sz, kind, banner,
+    sx, sy, sz, kind,
   });
 }
 
@@ -243,7 +252,7 @@ export function planCity(seed = CITY_SEED) {
       x = CENTER.x + Math.cos(a) * r;
       z = CENTER.z + Math.sin(a) * r;
       const c = coastAt(x, z);
-      const target = c.beachStart - 24;
+      const target = c.beachStart - COAST_ROAD_INSET;
       r += (target - Math.hypot(x - CENTER.x, z - CENTER.z)) * 0.55;
       r = clamp(r, 100, ISLAND_R * 0.97);
     }
@@ -263,18 +272,44 @@ export function planCity(seed = CITY_SEED) {
     addEdge(g, ia, ib, LANE1_W, 1);
   }
 
-  /* Coast ↔ residential feeders. */
+  /* Coast ↔ residential feeders: from the residential ring to the beach.
+     Each one starts on the nearest residential ring node (so it joins the
+     city grid) and runs radially until it reaches the sand band, crossing
+     the coast ring road on the way. Feeders that would climb a mountain
+     flank stop at its foot instead. */
+  const ringNodes = g.nodes.filter(n => {
+    const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
+    return rr >= RESIDENTIAL_R - RES_STEP && rr <= RESIDENTIAL_R;
+  });
   for (let k = 0; k < 8; k++) {
     const ang = (k / 8) * Math.PI * 2 + 0.2;
+    const dirX = Math.cos(ang), dirZ = Math.sin(ang);
+    /* Nearest residential ring node to the feeder direction. */
+    let start = null, best = Infinity;
+    for (const rn of ringNodes) {
+      const d = Math.hypot(
+        rn.x - CENTER.x - dirX * RESIDENTIAL_R,
+        rn.z - CENTER.z - dirZ * RESIDENTIAL_R,
+      );
+      if (d < best) { best = d; start = rn; }
+    }
+    if (!start) continue;
     const pts = [];
-    for (let r = RESIDENTIAL_R - 20; r < RESIDENTIAL_R + 120; r += 16) {
+    for (let r = RESIDENTIAL_R - RES_STEP + 16; r < ISLAND_R; r += 16) {
       const x = CENTER.x + Math.cos(ang) * r;
       const z = CENTER.z + Math.sin(ang) * r;
       const c = coastAt(x, z);
       if (c.rr > c.beachStart - 14) break;
+      if (heightAt(x, z) > WATER_LEVEL + 11) break;
       pts.push({ x, z });
     }
-    addPolyline(g, pts, LANE1_W, 1);
+    if (pts.length < 2) continue;
+    let prev = start.id;
+    for (const p of pts) {
+      const id = addNode(g, p.x, p.z, nk(p.x, p.z));
+      addEdge(g, prev, id, LANE1_W, 1);
+      prev = id;
+    }
   }
 
   /* ---- Buildings along metro streets ---------------------------------- */
@@ -315,7 +350,13 @@ export function planCity(seed = CITY_SEED) {
       const sy = kind === 'building' && url.includes('skyscraper')
         ? sc * R.f(1.15, 1.45)
         : sc;
-      addInst(placements, url, x, z, yaw, sc, sy, sc, kind, true);
+      /* Every metro block is a grey podium at footpath level with the
+         building sitting a few cm clear of its top. */
+      const ground = heightAt(x, z);
+      addInst(placements, url, x, z, yaw, sc, sy, sc, kind,
+        ground + PLATFORM_H + BUILD_UPLIFT);
+      addInst(placements, '', x, z, 0, PLATFORM_SZ, PLATFORM_H, PLATFORM_SZ,
+        'platform', ground);
       addCollider(colliders, x, z, rad, 'building');
     }
   }
@@ -329,13 +370,14 @@ export function planCity(seed = CITY_SEED) {
       const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
       if (rr < METRO_R + 16 || rr > RESIDENTIAL_R - 12) continue;
       if (heightAt(x, z) < WATER_LEVEL + 1) continue;
-      if (mountainFactor(x, z) > 0.5) continue;
+      /* Keep the mountains clear — no houses on or climbing the peaks. */
+      if (mountainFactor(x, z) > 0.25 || heightAt(x, z) > 14) continue;
       if (!R.chance(0.7)) continue;
 
       const sc = HOUSE_SCALE * R.f(0.92, 1.12);
       const yaw = R.pick([0, Math.PI / 2, Math.PI, -Math.PI / 2]);
       const url = R.pick(HOUSES);
-      addInst(placements, url, x, z, yaw, sc, sc, sc, 'house', true);
+      addInst(placements, url, x, z, yaw, sc, sc, sc, 'house');
       addCollider(colliders, x, z, sc * MODEL_SPAN * 0.38, 'building');
 
       /* Bush hedge around the lot, one gap for the drive. A run of plant.glb
@@ -368,7 +410,8 @@ export function planCity(seed = CITY_SEED) {
     }
   }
 
-  /* Street lights at high-degree junctions (metro). */
+  /* Street lights at high-degree junctions (metro), sitting on the footpath
+     corner diagonally off the intersection — kerb + halfway out the slab. */
   for (const n of g.nodes) {
     const deg = g.degree.get(n.id) || 0;
     if (deg < 3) continue;
@@ -377,10 +420,12 @@ export function planCity(seed = CITY_SEED) {
     if (!R.chance(0.55)) continue;
     const sc = HOUSE_SCALE * 1.2;
     const light = R.pick(LIGHTS);
-    addInst(placements, light, n.x + 4, n.z + 4, 0, sc, sc, sc, 'light');
+    const half = (g.nodeWidth.get(n.id) || 0) * 0.5;
+    const d = half + 0.45 + FOOT_W * 0.5;
+    addInst(placements, light, n.x + d, n.z + d, 0, sc, sc, sc, 'light');
   }
 
-  /* ---- Wild houses: beach cottages and mountain cabins ------------------ */
+  /* ---- Wild houses: beach cottages -------------------------------------- */
   /* A second stream so the city layout above stays byte-for-byte stable. */
   const W = rand(rng(seed * 7 + 3));
   const HOUSES_SHORT = HOUSES.slice(0, 14);   // cottages read small-scale
@@ -409,33 +454,9 @@ export function planCity(seed = CITY_SEED) {
     const sc = HOUSE_SCALE * W.f(0.7, 0.95);
     const url = W.pick(HOUSES_SHORT);
     addInst(placements, url, spot.x, spot.z, W.pick([0, Math.PI / 2, Math.PI, -Math.PI / 2]),
-      sc, sc, sc, 'house', true);
+      sc, sc, sc, 'house');
     addCollider(colliders, spot.x, spot.z, sc * MODEL_SPAN * 0.38, 'building');
     beachHouses++;
-  }
-
-  /* Mountain cabins: a few per peak on the driveable lower slopes. */
-  let cabins = 0;
-  for (const peak of PEAKS) {
-    const want = 1 + W.i(0, 2);
-    for (let k = 0; k < want && cabins < 12; k++) {
-      const ang = W.f(0, TAU);
-      const d = peak.r * W.f(0.42, 0.7);
-      const x = peak.x + Math.cos(ang) * d;
-      const z = peak.z + Math.sin(ang) * d;
-      const y = heightAt(x, z);
-      if (y < WATER_LEVEL + 2 || y > 44) continue;
-      const m = mountainFactor(x, z);
-      if (m < 0.3 || m > 0.85) continue;
-      if (normalAt(x, z).y < 0.6) continue;
-      if (!W.chance(0.6)) continue;
-
-      const sc = HOUSE_SCALE * W.f(0.72, 0.92);
-      addInst(placements, W.pick(HOUSES_SHORT), x, z,
-        W.pick([0, Math.PI / 2, Math.PI, -Math.PI / 2]), sc, sc, sc, 'house', true);
-      addCollider(colliders, x, z, sc * MODEL_SPAN * 0.38, 'building');
-      cabins++;
-    }
   }
 
   /* ---- City + wild trees, random and big -------------------------------- */
@@ -488,16 +509,6 @@ export function planCity(seed = CITY_SEED) {
       if (!W.chance(0.3)) continue;
       plantTree(x, z);
     }
-  }
-
-  /* Beach trees: along the sand band between the coast road and the sea. */
-  for (let a = 0; a < TAU; a += 0.03) {
-    if (!W.chance(0.5)) continue;
-    const x = CENTER.x + Math.cos(a) * ISLAND_R * W.f(0.79, 0.9);
-    const z = CENTER.z + Math.sin(a) * ISLAND_R * W.f(0.79, 0.9);
-    const { rr, beachStart } = coastAt(x, z);
-    if (rr < beachStart) continue;
-    plantTree(x, z);
   }
 
   /* Mountain trees: scattered around each peak below the snow line. */

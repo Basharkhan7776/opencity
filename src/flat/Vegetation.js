@@ -10,11 +10,11 @@
  */
 import * as THREE from 'three';
 import { rng, rand } from '../core/rng.js';
-import { smoothstep } from '../core/util.js';
+import { clamp, smoothstep } from '../core/util.js';
 import { celMaterial } from '../render/cel.js';
 import {
   heightAt, normalAt, coastAt, mountainFactor, CENTER, WATER_LEVEL,
-  FLAT_R, PLAZA_HALF, inCity,
+  FLAT_R, PLAZA_HALF, PEAKS, inCity, COAST_ROAD_INSET,
 } from './Island.js';
 
 const SEED = 91;
@@ -25,19 +25,19 @@ const KINDS = {
   tree: {
     url: '/assets/forest/tree.glb',
     radius: 1.15,
-    scale: [0.55, 3.8],       // saplings → tall
+    scale: [0.7, 4.6],        // saplings → tall
     tallBias: true,
   },
   treeHigh: {
     url: '/assets/forest/tree-high.glb',
     radius: 1.35,
-    scale: [0.7, 4.6],
+    scale: [0.85, 5.6],
     tallBias: true,
   },
   plant: {
     url: '/assets/forest/plant.glb',
     radius: 0.55,
-    scale: [0.7, 2.4],
+    scale: [0.45, 2.6],
   },
   rocksHigh: {
     url: '/assets/forest/rocks-high.glb',
@@ -93,20 +93,90 @@ function rockTransform(R, lo, hi) {
   };
 }
 
+/**
+ * Random bush size: a power curve so most clumps land mid-range while some
+ * turn out tiny or oversized, plus a rare big landmark bush.
+ */
+function bushScale(R, lo, hi) {
+  const t = Math.pow(R.f(), 0.6);
+  const base = lo + (hi - lo) * t;
+  if (R.chance(0.06)) return base * R.f(1.3, 1.7);
+  return base;
+}
+
 const SPAWN_CLEAR = 55;     // metres kept empty around map centre
 const MIN_LAND_Y = WATER_LEVEL + 0.6;
 const MAX_SLOPE = 0.55;     // normal.y below this = too steep to plant
+
+/* How far outside the road slab vegetation must stay (kerb + footpath +
+   a little margin), so no tree or rock ever grows on the asphalt. */
+const ROAD_MARGIN = 3;
+
+/**
+ * Coarse spatial query: is a point inside any road slab (plus ROAD_MARGIN)?
+ * Bins each edge segment into a fixed cell grid so the check is O(1) for a
+ * typical point instead of scanning every edge.
+ */
+function buildRoadClearance(graph) {
+  const CELL = 64;
+  const bins = new Map();
+  const key = (cx, cz) => cx * 73856093 ^ cz * 19349663;
+  if (graph) {
+    const byId = new Map();
+    for (const n of graph.nodes) byId.set(n.id, n);
+    for (const e of graph.edges) {
+      const a = byId.get(e.a), b = byId.get(e.b);
+      if (!a || !b) continue;
+      const h = e.width * 0.5 + ROAD_MARGIN;
+      const seg = { ax: a.x, az: a.z, bx: b.x, bz: b.z, h };
+      const x0 = Math.floor(Math.min(a.x, b.x) / CELL) - 1;
+      const x1 = Math.floor(Math.max(a.x, b.x) / CELL) + 1;
+      const z0 = Math.floor(Math.min(a.z, b.z) / CELL) - 1;
+      const z1 = Math.floor(Math.max(a.z, b.z) / CELL) + 1;
+      for (let cx = x0; cx <= x1; cx++) {
+        for (let cz = z0; cz <= z1; cz++) {
+          const k = key(cx, cz);
+          const arr = bins.get(k);
+          if (arr) arr.push(seg);
+          else bins.set(k, [seg]);
+        }
+      }
+    }
+  }
+  return (x, z) => {
+    const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
+    for (let i = -1; i <= 1; i++) {
+      for (let j = -1; j <= 1; j++) {
+        const arr = bins.get(key(cx + i, cz + j));
+        if (!arr) continue;
+        for (const s of arr) {
+          const ex = s.bx - s.ax, ez = s.bz - s.az;
+          const el = ex * ex + ez * ez;
+          const t = el ? clamp(((x - s.ax) * ex + (z - s.az) * ez) / el, 0, 1) : 0;
+          const dx = x - (s.ax + ex * t), dz = z - (s.az + ez * t);
+          if (dx * dx + dz * dz <= s.h * s.h) return true;
+        }
+      }
+    }
+    return false;
+  };
+}
 
 /**
  * Deterministic placement plan. Returns placements (for rendering) and
  * colliders (for physics). Safe to call before any GLB is loaded.
  *
+ * @param {object} [graph]  road graph (nodes/edges) so nothing grows on roads
  * @returns {{placements: object[], colliders: {x:number,z:number,radius:number,kind:string}[]}}
  */
-export function planVegetation() {
+export function planVegetation(graph) {
   const R = rand(rng(SEED));
   const placements = [];
   const colliders = [];
+  const nearRoad = buildRoadClearance(graph);
+  /* Beach sand starts at the coast ring road; nothing may grow seaward of it
+     (the beach and the road corridor both stay open). */
+  const beachGate = beachStart => beachStart - COAST_ROAD_INSET - 6;
 
   /* Jittered grid over the plaza square. */
   const half = PLAZA_HALF * 0.96;
@@ -123,11 +193,12 @@ export function planVegetation() {
       if (y < MIN_LAND_Y) continue;
 
       const { rr, beachStart } = coastAt(x, z);
-      /* Keep beach open and the spawn pad clear. */
-      if (rr > beachStart - 12) continue;
+      /* Keep the beach and coast road open, and the spawn pad clear. */
+      if (rr > beachGate(beachStart)) continue;
       if (Math.hypot(x - CENTER.x, z - CENTER.z) < SPAWN_CLEAR) continue;
       /* No forest through metro houses / roads. */
       if (inCity(x, z)) continue;
+      if (nearRoad(x, z)) continue;
 
       const n = normalAt(x, z);
       if (n.y < MAX_SLOPE) continue;
@@ -185,13 +256,14 @@ export function planVegetation() {
         };
         colliders.push({ x, z, radius: def.radius * h * fat * 0.85, kind });
       } else {
-        /* Bushes — visual only. */
-        const s = R.f(def.scale[0], def.scale[1]);
+        /* Bushes — solid clumps with a wide random size. */
+        const s = bushScale(R, def.scale[0], def.scale[1]);
         placement = {
           kind, x, y, z,
-          sx: s * R.f(0.9, 1.15), sy: s, sz: s * R.f(0.9, 1.15),
+          sx: s * R.f(0.7, 1.4), sy: s * R.f(0.7, 1.45), sz: s * R.f(0.7, 1.4),
           yaw: R.f(0, Math.PI * 2), pitch: 0, roll: 0,
         };
+        colliders.push({ x, z, radius: def.radius * s * 0.85, kind });
       }
       placements.push(placement);
     }
@@ -209,14 +281,105 @@ export function planVegetation() {
       const y = heightAt(x, z);
       if (y < MIN_LAND_Y) continue;
       if (normalAt(x, z).y < 0.7) continue;
+      if (nearRoad(x, z)) continue;
       if (!R.chance(0.32)) continue;
-      const s = R.f(0.7, 2.2);
+      const s = bushScale(R, 0.5, 2.6);
       placements.push({
         kind: 'plant', x, y, z,
-        sx: s * R.f(0.85, 1.2), sy: s * R.f(0.75, 1.25), sz: s * R.f(0.85, 1.2),
+        sx: s * R.f(0.7, 1.4), sy: s * R.f(0.7, 1.45), sz: s * R.f(0.7, 1.4),
         yaw: R.f(0, Math.PI * 2), pitch: 0, roll: 0,
       });
+      colliders.push({ x, z, radius: 0.55 * s * 0.85, kind: 'plant' });
     }
+  }
+
+  /* Mountain tree groves — a fixed set of distinct clusters (5 per peak,
+     ~16-20 total) on the treeline shoulders below the snow line, so the
+     peaks read as forested clumps instead of bare scatter. */
+  const GROVES_PER_PEAK = 5;
+  for (const peak of PEAKS) {
+    for (let k = 0; k < GROVES_PER_PEAK; k++) {
+      const ang = R.f(0, Math.PI * 2);
+      const d = peak.r * R.f(0.38, 0.72);
+      const cx = peak.x + Math.cos(ang) * d;
+      const cz = peak.z + Math.sin(ang) * d;
+      const cy = heightAt(cx, cz);
+      if (cy < MIN_LAND_Y || cy > 50) continue;
+      if (mountainFactor(cx, cz) < 0.35) continue;
+      if (inCity(cx, cz)) continue;
+      if (normalAt(cx, cz).y < 0.45) continue;
+      const nTrees = R.i(7, 13);
+      for (let kk = 0; kk < nTrees; kk++) {
+        const a = R.f(0, Math.PI * 2);
+        const dd = Math.sqrt(R.f()) * R.f(10, 20);
+        const tx = cx + Math.cos(a) * dd;
+        const tz = cz + Math.sin(a) * dd;
+        const ty = heightAt(tx, tz);
+        if (ty < MIN_LAND_Y || ty > 52) continue;
+        if (inCity(tx, tz)) continue;
+        if (normalAt(tx, tz).y < 0.4) continue;
+        const kind = R.chance(0.7) ? 'treeHigh' : 'tree';
+        const def = KINDS[kind];
+        const h = treeScale(R, def.scale[0], def.scale[1]);
+        const fat = R.f(0.82, 1.18);
+        placements.push({
+          kind, x: tx, y: ty, z: tz,
+          sx: h * fat, sy: h, sz: h * fat,
+          yaw: R.f(0, Math.PI * 2), pitch: 0, roll: 0,
+        });
+        colliders.push({ x: tx, z: tz, radius: def.radius * h * fat * 0.85, kind });
+      }
+    }
+  }
+
+  /* Countryside groves — distinct tree clusters in the wilds between the
+     city skirt and the beach, well away from the mountains, so the drive
+     out of town passes forested stands. */
+  const WILD_R0 = 620, WILD_R1 = 800;
+  const wildCentres = [];
+  let wildGuard = 0;
+  while (wildCentres.length < 12 && wildGuard++ < 500) {
+    const a = R.f(0, Math.PI * 2);
+    const r = R.f(WILD_R0, WILD_R1);
+    const wx = CENTER.x + Math.cos(a) * r;
+    const wz = CENTER.z + Math.sin(a) * r;
+    const { rr, beachStart } = coastAt(wx, wz);
+    if (rr > beachGate(beachStart)) continue;
+    if (rr < WILD_R0) continue;
+    if (mountainFactor(wx, wz) > 0.3) continue;
+    if (inCity(wx, wz)) continue;
+    if (nearRoad(wx, wz)) continue;
+    const wy = heightAt(wx, wz);
+    if (wy < MIN_LAND_Y) continue;
+    if (normalAt(wx, wz).y < 0.6) continue;
+    /* Keep groves separated so each reads as its own group. */
+    let far = true;
+    for (const c of wildCentres) {
+      if (Math.hypot(wx - c.x, wz - c.z) < 130) { far = false; break; }
+    }
+    if (!far) continue;
+    const nTrees = R.i(6, 11);
+    for (let k = 0; k < nTrees; k++) {
+      const a2 = R.f(0, Math.PI * 2);
+      const dd = Math.sqrt(R.f()) * R.f(9, 18);
+      const tx = wx + Math.cos(a2) * dd;
+      const tz = wz + Math.sin(a2) * dd;
+      const ty = heightAt(tx, tz);
+      if (ty < MIN_LAND_Y || ty > 30) continue;
+      if (normalAt(tx, tz).y < 0.5) continue;
+      if (nearRoad(tx, tz)) continue;
+      const kind = R.chance(0.55) ? 'tree' : 'treeHigh';
+      const def = KINDS[kind];
+      const h = treeScale(R, def.scale[0], def.scale[1]);
+      const fat = R.f(0.82, 1.18);
+      placements.push({
+        kind, x: tx, y: ty, z: tz,
+        sx: h * fat, sy: h, sz: h * fat,
+        yaw: R.f(0, Math.PI * 2), pitch: 0, roll: 0,
+      });
+      colliders.push({ x: tx, z: tz, radius: def.radius * h * fat * 0.85, kind });
+    }
+    wildCentres.push({ x: wx, z: wz });
   }
 
   /* Extra rock scatter on flats and ridges — irregular shapes. */
@@ -231,8 +394,9 @@ export function planVegetation() {
       const y = heightAt(x, z);
       if (y < MIN_LAND_Y || y > 50) continue;
       const { rr, beachStart } = coastAt(x, z);
-      if (rr > beachStart - 18) continue;
+      if (rr > beachGate(beachStart)) continue;
       if (normalAt(x, z).y < 0.5) continue;
+      if (nearRoad(x, z)) continue;
       const kinds = ['stones', 'rocksLow', 'rocksHigh', 'rocksRamp'];
       const kind = kinds[R.i(0, kinds.length - 1)];
       const def = KINDS[kind];
@@ -358,9 +522,10 @@ function mergeGeometriesUV(list) {
 /**
  * Load forest GLBs and build instanced meshes for the placement plan.
  * @param {object[]} placements
+ * @param {(frac:number)=>void} [onProgress]  called with 0..1 per model kind loaded
  * @returns {Promise<THREE.Group>}
  */
-export async function buildVegetationMeshes(placements) {
+export async function buildVegetationMeshes(placements, onProgress) {
   const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
   const loader = new GLTFLoader();
   const root = new THREE.Group();
@@ -374,16 +539,23 @@ export async function buildVegetationMeshes(placements) {
     list.push(p);
   }
 
+  const kinds = [...byKind.keys()];
+  const total = Math.max(1, kinds.length);
+  let done = 0;
+  const bump = () => onProgress?.(done / total);
+
   const dummy = new THREE.Object3D();
 
-  await Promise.all([...byKind.entries()].map(async ([kind, items]) => {
+  await Promise.all(kinds.map(async (kind) => {
+    const items = byKind.get(kind);
     const def = KINDS[kind];
-    if (!def || !items.length) return;
+    if (!def || !items.length) { done++; bump(); return; }
     let gltf;
     try {
       gltf = await loader.loadAsync(def.url);
     } catch (err) {
       console.warn('vegetation load failed', def.url, err);
+      done++; bump();
       return;
     }
 
@@ -438,6 +610,7 @@ export async function buildVegetationMeshes(placements) {
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
     root.add(mesh);
+    done++; bump();
   }));
 
   return root;
@@ -445,9 +618,10 @@ export async function buildVegetationMeshes(placements) {
 
 /**
  * Plan + collider grid. Call once at world build; meshes load separately.
+ * @param {object} [graph]  road graph so nothing grows on road slabs
  */
-export function createVegetationSystem() {
-  const { placements, colliders } = planVegetation();
+export function createVegetationSystem(graph) {
+  const { placements, colliders } = planVegetation(graph);
   const grid = new ObstacleGrid(colliders);
   return { placements, colliders, grid };
 }

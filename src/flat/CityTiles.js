@@ -6,31 +6,6 @@
 import * as THREE from 'three';
 import { celMaterial } from '../render/cel.js';
 import { MODEL_SPAN } from './CityLayout.js';
-import { skipOverridePass } from '../fx/pass.js';
-
-/* Temporary: floating name banner above buildings/houses (asset file name). */
-function makeBannerTexture(name) {
-  const pad = 14;
-  const font = 'bold 56px monospace';
-  const c = document.createElement('canvas');
-  const g = c.getContext('2d');
-  g.font = font;
-  const w = Math.ceil(g.measureText(name).width) + pad * 2;
-  c.width = w;
-  c.height = 96;
-  g.font = font;
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  g.strokeStyle = 'rgba(0,0,0,0.85)';
-  g.lineWidth = 12;
-  g.lineJoin = 'round';
-  g.strokeText(name, w / 2, 48);
-  g.fillStyle = '#ffe9a8';
-  g.fillText(name, w / 2, 48);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
 
 function bakeSceneGeometry(scene) {
   scene.updateMatrixWorld(true);
@@ -89,9 +64,10 @@ function mergeGeometriesUV(list) {
 
 /**
  * @param {object[]} placements  from planCity
+ * @param {(frac:number)=>void} [onProgress]  called with 0..1 per unique model loaded
  * @returns {Promise<THREE.Group>}
  */
-export async function buildCityMeshes(placements) {
+export async function buildCityMeshes(placements, onProgress) {
   const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
   const loader = new GLTFLoader();
   const root = new THREE.Group();
@@ -99,16 +75,22 @@ export async function buildCityMeshes(placements) {
 
   const byUrl = new Map();
   for (const p of placements) {
+    if (p.kind === 'platform') continue;   // podiums are procedural boxes
     let list = byUrl.get(p.url);
     if (!list) { list = []; byUrl.set(p.url, list); }
     list.push(p);
   }
 
+  const urls = [...byUrl.keys()];
+  const total = Math.max(1, urls.length);
+  let done = 0;
+  const bump = () => onProgress?.(done / total);
+
   const dummy = new THREE.Object3D();
   const cache = new Map(); // url → { geo, map }
 
-  await Promise.all([...byUrl.entries()].map(async ([url, items]) => {
-    if (!items.length) return;
+  await Promise.all(urls.map(async (url) => {
+    const items = byUrl.get(url);
     let proto = cache.get(url);
     if (!proto) {
       let gltf;
@@ -116,6 +98,7 @@ export async function buildCityMeshes(placements) {
         gltf = await loader.loadAsync(url);
       } catch (err) {
         console.warn('city load failed', url, err);
+        done++; bump();
         return;
       }
       let map = null;
@@ -154,6 +137,7 @@ export async function buildCityMeshes(placements) {
       }
       proto = { geo, map, norm, protoHeight };
       cache.set(url, proto);
+      done++; bump();
     }
 
     const mat = celMaterial({
@@ -183,32 +167,33 @@ export async function buildCityMeshes(placements) {
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
     root.add(mesh);
-
-    /* Temporary name banners above buildings/houses. */
-    if (items.some(it => it.banner)) {
-      const name = url.split('/').pop().replace(/\.glb$/, '');
-      const tex = makeBannerTexture(name);
-      const sprite = new THREE.Sprite(
-        new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true }),
-      );
-      const span = MODEL_SPAN * (proto.norm || 1);
-      const unit = span * 0.9;
-      sprite.scale.set(tex.image.width / 96 * unit, unit, 1);
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i];
-        if (!it.banner) continue;
-        const h = proto.protoHeight * (it.sy ?? 1) * (proto.norm || 1);
-        const s = sprite.clone();
-        s.position.set(it.x, it.y + h + unit * 0.8, it.z);
-        /* Keep the banner out of the ink prepass: it is transparent in the
-           beauty pass, so a solid quad in the normals buffer turns into an
-           inked rectangle floating over whatever is behind it. */
-        skipOverridePass(s);
-        root.add(s);
-      }
-      tex.dispose();
-    }
   }));
+
+  /* Grey podiums under metro buildings — one per city square, level with
+     the footpath (a lighter warm grey than the road's cool concrete). */
+  const platforms = placements.filter(p => p.kind === 'platform');
+  if (platforms.length) {
+    const box = new THREE.BoxGeometry(1, 1, 1);
+    box.translate(0, 0.5, 0);   // base at instance y
+    const mat = celMaterial({ color: 0xaaa59c });
+    mat.transparent = false;
+    mat.depthWrite = true;
+    const pm = new THREE.InstancedMesh(box, mat, platforms.length);
+    pm.name = 'city-platforms';
+    pm.castShadow = true;
+    pm.receiveShadow = true;
+    for (let i = 0; i < platforms.length; i++) {
+      const it = platforms[i];
+      dummy.position.set(it.x, it.y + it.sy * 0.5, it.z);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(it.sx, it.sy, it.sz);
+      dummy.updateMatrix();
+      pm.setMatrixAt(i, dummy.matrix);
+    }
+    pm.instanceMatrix.needsUpdate = true;
+    pm.computeBoundingSphere();
+    root.add(pm);
+  }
 
   return root;
 }
