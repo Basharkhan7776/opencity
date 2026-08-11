@@ -56,29 +56,35 @@ const CAM_FAR = FOG_FAR + 100;  // camera far plane, just past the fog
 
 /* The player's garage. Each entry is a GLB from assets/vehicle/ which
    buildCarFromGLTF scales onto the physics platform, keeping the model's own
-   baked track width so every vehicle runs a different tyre spacing. V cycles
-   through these; #car=<name> picks the starting one. */
+   baked track width so every vehicle runs a different tyre spacing. The pause
+   menu's CHANGE VEHICLE picks from these; #car=<name> picks the starting one.
+
+   perf drives the feel: power/drag = engine (acceleration, top speed),
+   grip = tyre friction, steer = wheel response rate, susp = spring stiffness
+   (<1 soft and bouncy — the trucks; >1 stiff and planted — the race cars),
+   drift = how easily the rear breaks away (<1 glued — heavy vehicles won't
+   slide; >1 tail-happy — the fast cars slide on the handbrake or power). */
 const VEHICLES = [
-  { name: 'Sports Sedan', url: '/assets/vehicle/sedan-sports.glb', perf: { power: 1.0, drag: 1.0 } },
-  { name: 'Sedan', url: '/assets/vehicle/sedan.glb', perf: { power: 0.69, drag: 1.0 } },
-  { name: 'Hatchback', url: '/assets/vehicle/hatchback-sports.glb', perf: { power: 0.59, drag: 1.0 } },
-  { name: 'SUV', url: '/assets/vehicle/suv.glb', perf: { power: 0.72, drag: 1.0 } },
-  { name: 'Luxury SUV', url: '/assets/vehicle/suv-luxury.glb', perf: { power: 0.88, drag: 1.05 } },
-  { name: 'Race', url: '/assets/vehicle/race.glb', perf: { power: 1.58, drag: 0.95 } },
-  { name: 'Future Race', url: '/assets/vehicle/race-future.glb', perf: { power: 1.72, drag: 0.9 } },
-  { name: 'Police', url: '/assets/vehicle/police.glb', perf: { power: 0.92, drag: 1.0 } },
-  { name: 'Taxi', url: '/assets/vehicle/taxi.glb', perf: { power: 0.49, drag: 1.0 } },
-  { name: 'Van', url: '/assets/vehicle/van.glb', perf: { power: 0.44, drag: 1.0 } },
-  { name: 'Delivery', url: '/assets/vehicle/delivery.glb', perf: { power: 0.4, drag: 1.15 } },
-  { name: 'Delivery Flat', url: '/assets/vehicle/delivery-flat.glb', perf: { power: 0.42, drag: 1.1 } },
-  { name: 'Truck', url: '/assets/vehicle/truck.glb', perf: { power: 0.55, drag: 1.35 } },
-  { name: 'Flatbed Truck', url: '/assets/vehicle/truck-flat.glb', perf: { power: 0.52, drag: 1.3 } },
-  { name: 'Garbage Truck', url: '/assets/vehicle/garbage-truck.glb', perf: { power: 0.38, drag: 1.45 } },
-  { name: 'Firetruck', url: '/assets/vehicle/firetruck.glb', perf: { power: 0.7, drag: 1.4 } },
-  { name: 'Ambulance', url: '/assets/vehicle/ambulance.glb', perf: { power: 0.75, drag: 1.2 } },
-  { name: 'Tractor', url: '/assets/vehicle/tractor.glb', perf: { power: 0.35, drag: 1.25 } },
-  { name: 'Tractor Shovel', url: '/assets/vehicle/tractor-shovel.glb', perf: { power: 0.32, drag: 1.3 } },
-  { name: 'Police Tractor', url: '/assets/vehicle/tractor-police.glb', perf: { power: 0.36, drag: 1.25 } },
+  { name: 'Sports Sedan', url: '/assets/vehicle/sedan-sports.glb', perf: { power: 1.0, drag: 1.0, grip: 1.05, steer: 1.05, susp: 1.15, drift: 0.8 } },
+  { name: 'Sedan', url: '/assets/vehicle/sedan.glb', perf: { power: 0.69, drag: 1.0, grip: 1.0, steer: 1.0, susp: 1.0, drift: 0.55 } },
+  { name: 'Hatchback', url: '/assets/vehicle/hatchback-sports.glb', perf: { power: 0.59, drag: 1.0, grip: 0.98, steer: 1.0, susp: 0.9, drift: 0.6 } },
+  { name: 'SUV', url: '/assets/vehicle/suv.glb', perf: { power: 0.72, drag: 1.0, grip: 1.0, steer: 0.9, susp: 0.7, drift: 0.3 } },
+  { name: 'Luxury SUV', url: '/assets/vehicle/suv-luxury.glb', perf: { power: 0.88, drag: 1.05, grip: 1.0, steer: 0.9, susp: 0.7, drift: 0.3 } },
+  { name: 'Race', url: '/assets/vehicle/race.glb', perf: { power: 1.58, drag: 0.8, grip: 5.0, steer: 1.0, susp: 10.0, drift: 0.1 } },
+  { name: 'Future Race', url: '/assets/vehicle/race-future.glb', perf: { power: 1.72, drag: 0.9, grip: 1.35, steer: 1.35, susp: 2.1, drift: 0.35 } },
+  { name: 'Police', url: '/assets/vehicle/police.glb', perf: { power: 0.92, drag: 1.0, grip: 1.05, steer: 1.05, susp: 1.1, drift: 0.75 } },
+  { name: 'Taxi', url: '/assets/vehicle/taxi.glb', perf: { power: 0.49, drag: 1.0, grip: 0.95, steer: 0.95, susp: 0.9, drift: 0.7 } },
+  { name: 'Van', url: '/assets/vehicle/van.glb', perf: { power: 0.44, drag: 1.0, grip: 0.9, steer: 0.85, susp: 0.5, drift: 0.2 } },
+  { name: 'Delivery', url: '/assets/vehicle/delivery.glb', perf: { power: 0.4, drag: 1.15, grip: 0.9, steer: 0.85, susp: 0.5, drift: 0.2 } },
+  { name: 'Delivery Flat', url: '/assets/vehicle/delivery-flat.glb', perf: { power: 0.42, drag: 1.1, grip: 0.9, steer: 0.85, susp: 0.5, drift: 0.2 } },
+  { name: 'Truck', url: '/assets/vehicle/truck.glb', perf: { power: 0.55, drag: 1.35, grip: 0.85, steer: 0.8, susp: 0.45, drift: 0.12 } },
+  { name: 'Flatbed Truck', url: '/assets/vehicle/truck-flat.glb', perf: { power: 0.52, drag: 1.3, grip: 0.85, steer: 0.8, susp: 0.45, drift: 0.12 } },
+  { name: 'Garbage Truck', url: '/assets/vehicle/garbage-truck.glb', perf: { power: 0.38, drag: 1.45, grip: 0.8, steer: 0.75, susp: 0.4, drift: 0.08 } },
+  { name: 'Firetruck', url: '/assets/vehicle/firetruck.glb', perf: { power: 0.7, drag: 1.4, grip: 0.85, steer: 0.8, susp: 0.5, drift: 0.18 } },
+  { name: 'Ambulance', url: '/assets/vehicle/ambulance.glb', perf: { power: 0.75, drag: 1.2, grip: 0.9, steer: 0.85, susp: 0.55, drift: 0.25 } },
+  { name: 'Tractor', url: '/assets/vehicle/tractor.glb', perf: { power: 0.35, drag: 1.25, grip: 0.8, steer: 0.7, susp: 0.4, drift: 0.05 } },
+  { name: 'Tractor Shovel', url: '/assets/vehicle/tractor-shovel.glb', perf: { power: 0.32, drag: 1.3, grip: 0.75, steer: 0.65, susp: 0.35, drift: 0.04 } },
+  { name: 'Police Tractor', url: '/assets/vehicle/tractor-police.glb', perf: { power: 0.36, drag: 1.25, grip: 0.8, steer: 0.7, susp: 0.4, drift: 0.05 } },
 ];
 
 class Game {
@@ -212,8 +218,8 @@ class Game {
 
   buildCars() {
     this.player = new Car(this.track, { palette: 0, perf: VEHICLES[0].perf });
-    /* Spawn on the island flats at map centre. */
-    this.player.placeAt(INTER_X, 0);
+    /* The run starts on a random city road, facing along the tarmac. */
+    this._teleportToRandomRoad();
 
     this.vehicleViews = new Map();
     this.vehiclesLoading = new Map();
@@ -225,9 +231,6 @@ class Game {
       if (byUrl >= 0) idx = byUrl;
     }
     this.vehicleIndex = idx;
-    addEventListener('keydown', e => {
-      if (e.key === 'v' || e.key === 'V') this.cycleVehicle();
-    });
     this._loadVehicle(this.vehicleIndex);
   }
 
@@ -240,11 +243,6 @@ class Game {
       const map = o.material ? o.material.map : null;
       o.material = celMaterial({ map });
     });
-  }
-
-  cycleVehicle() {
-    this.vehicleIndex = (this.vehicleIndex + 1) % VEHICLES.length;
-    this._loadVehicle(this.vehicleIndex);
   }
 
   async _setVehicle(idx) {
@@ -285,10 +283,16 @@ class Game {
   step(dt) {
     this.input.update(dt);
 
-    /* Escape toggles a freeze. The world is not redrawn while paused — see
-       frame() — so the picture is genuinely still. */
+    /* While paused the world is not redrawn — see frame() — and the only
+       thing that runs is the menu shell: RESUME / CHANGE VEHICLE / RESTART,
+       and the garage list that CHANGE VEHICLE opens. */
+    if (this.paused) {
+      this._menuStep();
+      return;
+    }
+
+    /* Escape opens the pause menu. */
     if (this.input.pausePressed) this.togglePause();
-    if (this.paused) return;
 
     if (this.fly) {
       this.flyStep(dt);
@@ -315,8 +319,11 @@ class Game {
     if (n >= MAX_SUBSTEPS) this._simAcc = 0;
     const alpha = this._simAcc / SUBSTEP;
 
-    /* Drove into the sea — snap back to the island centre. */
-    if (this._isSubmerged(p)) this.teleportToCenter();
+    /* Drove into the sea — back onto a random road. */
+    if (this._isSubmerged(p)) {
+      this._teleportToRandomRoad();
+      this.chase.started = false;
+    }
 
     if (this.playerView) p.applyTo(this.playerView, alpha);
 
@@ -366,10 +373,12 @@ class Game {
   togglePause() {
     this.paused = !this.paused;
     if (this.paused) {
+      this.menu = { view: 'main', index: 0 };
       this.audio.stop();
       this._exitPointerLock();
       this._setCursorVisible(true);
     } else {
+      this.menu = null;
       this.audio.start();
       this._setCursorVisible(false);
       this._requestPointerLock();
@@ -392,6 +401,72 @@ class Game {
 
   _exitPointerLock() {
     if (document.pointerLockElement) document.exitPointerLock?.();
+  }
+
+  /* ---- pause menu shell ------------------------------------------------ */
+
+  /* Menu navigation on the shell edges (Input.menuUp/menuDown/confirm).
+     'main' is RESUME / CHANGE VEHICLE / RESTART; 'vehicles' is the garage
+     list. Esc steps back one view, or resumes from the top view. */
+  _menuStep() {
+    const m = this.menu;
+    const i = this.input;
+    if (!m) return;
+    if (i.pausePressed) {
+      if (m.view === 'vehicles') { m.view = 'main'; return; }
+      this.togglePause();
+      return;
+    }
+    if (m.view === 'main') {
+      if (i.menuUpPressed) m.index = (m.index + 2) % 3;
+      else if (i.menuDownPressed) m.index = (m.index + 1) % 3;
+      else if (i.confirmPressed) {
+        if (m.index === 0) this.togglePause();                    // RESUME
+        else if (m.index === 1) {                                 // CHANGE VEHICLE
+          m.view = 'vehicles';
+          m.index = this.vehicleIndex;
+        } else { this.respawn(); this.togglePause(); }            // RESTART
+      }
+      return;
+    }
+    const n = VEHICLES.length;
+    if (i.menuUpPressed) m.index = (m.index + n - 1) % n;
+    else if (i.menuDownPressed) m.index = (m.index + 1) % n;
+    else if (i.confirmPressed) this._chooseVehicle(m.index);
+  }
+
+  /** Swap to the chosen garage entry, drop on a random road, resume. */
+  async _chooseVehicle(idx) {
+    if (this._switching) return;
+    this._switching = true;
+    this.vehicleIndex = idx;
+    try {
+      await this._loadVehicle(idx);
+      this._teleportToRandomRoad();
+    } finally {
+      this._switching = false;
+    }
+    this.chase.started = false;
+    this.togglePause();
+  }
+
+  /** Mid-point of a random city road edge, facing along the tarmac. */
+  _teleportToRandomRoad() {
+    const g = this.world?.city?.graph;
+    const p = this.player;
+    if (g && g.edges.length) {
+      const byId = new Map(g.nodes.map(n => [n.id, n]));
+      const e = g.edges[Math.floor(Math.random() * g.edges.length)];
+      const a = byId.get(e.a);
+      const b = byId.get(e.b);
+      if (a && b) {
+        p.placeAt((a.x + b.x) * 0.5, (a.z + b.z) * 0.5);
+        p.yaw = Math.atan2(b.z - a.z, b.x - a.x);
+        this.resetSimClock();
+        return;
+      }
+    }
+    this.respawn();
   }
 
   respawn() {
@@ -522,13 +597,17 @@ class Game {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     this._acc += dt; this._frames++;
     if (this._acc > 0.5) { this.fps = this._frames / this._acc; this._acc = 0; this._frames = 0; }
-    if (!this.paused) this.step(dt);
+    /* Always stepped, even paused: step() updates input first and returns
+       before the substep loop when this.paused, so the shell can read the
+       Escape edge that closes the menu — see ui/pause.js. Only rendering is
+       skipped below. */
+    this.step(dt);
     /* Sphere of visibility: hide world chunks outside VIEW_RADIUS of the car
        before the frame is drawn, so distant assets aren't rendered at all. */
     this._cullWorldChunks();
     /* Paused: no GL work at all, the compositor holds the last picture. */
     if (!this.paused) this.pipeline.render();
-    if (this.hudOn) this.hud.draw(this.paused);
+    if (this.hudOn) this.hud.draw(this.paused, this.menu);
   }
 
   /* ---- harness control surface ------------------------------------- */
@@ -701,22 +780,13 @@ class Hud {
     this.gear = gear;
   }
 
-  draw(paused = false) {
+  draw(paused = false, menu = null) {
     const { ctx, w, h, dpr } = this;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
     if (paused) {
-      ctx.font = '700 34px ui-sans-serif, system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillStyle = '#f0e6d8';
-      ctx.shadowColor = 'rgba(20,10,14,0.9)';
-      ctx.shadowBlur = 12;
-      ctx.fillText('PAUSED', w / 2, h / 2 - 10);
-      ctx.shadowBlur = 0;
-      ctx.font = '500 15px ui-sans-serif, system-ui, sans-serif';
-      ctx.fillStyle = '#c9b8a5';
-      ctx.fillText('ESC to resume', w / 2, h / 2 + 22);
+      this._drawMenu(menu);
       return;
     }
 
@@ -739,7 +809,7 @@ class Hud {
     ctx.textAlign = 'left';
     ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(240,230,216,0.55)';
-    ctx.fillText('WASD / ARROWS  drive   MOUSE  look   V  vehicle   R  reset   ESC  pause   CTRL+SHIFT+C  fly cam', 24, h - 20);
+    ctx.fillText('WASD / ARROWS  drive   MOUSE  look   V  swap car   R  reset   ESC  menu   CTRL+SHIFT+C  fly cam', 24, h - 20);
 
     /* Current vehicle, bottom centre. */
     if (this.carName) {
@@ -748,6 +818,83 @@ class Hud {
       ctx.fillStyle = 'rgba(240,230,216,0.75)';
       ctx.fillText(this.carName, w / 2, h - 20);
     }
+  }
+
+  /* ---- the pause menu ------------------------------------------------ */
+
+  /* Wash over the frozen frame so the menu type stays legible against the
+     cel world, matching the plate's 0.55 dim. */
+  _drawMenu(menu) {
+    const { ctx, w, h } = this;
+    ctx.fillStyle = 'rgba(15,10,14,0.55)';
+    ctx.fillRect(0, 0, w, h);
+    ctx.textAlign = 'center';
+
+    if (menu?.view === 'vehicles') return this._drawVehicleList(menu);
+
+    ctx.font = '700 34px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#f0e6d8';
+    ctx.shadowColor = 'rgba(20,10,14,0.9)';
+    ctx.shadowBlur = 12;
+    ctx.fillText('PAUSED', w / 2, h / 2 - 92);
+    ctx.shadowBlur = 0;
+    ctx.font = '500 15px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#c9b8a5';
+    ctx.fillText(this.carName || '', w / 2, h / 2 - 60);
+
+    const items = ['RESUME', 'CHANGE VEHICLE', 'RESTART'];
+    ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
+    for (let k = 0; k < items.length; k++) {
+      const y = h / 2 + k * 34;
+      const sel = menu ? k === menu.index : k === 0;
+      ctx.fillStyle = sel ? '#f0e6d8' : 'rgba(201,184,165,0.7)';
+      ctx.fillText(items[k], w / 2 + 14, y);
+      if (sel) {
+        ctx.fillStyle = '#ffd54a';
+        ctx.fillText('▶', w / 2 - 96, y);
+      }
+    }
+    ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(240,230,216,0.55)';
+    ctx.fillText('UP / DOWN  choose    ENTER  select    ESC  back', w / 2, h / 2 + 130);
+  }
+
+  /* The garage list — a scrolling window over VEHICLES, the current car
+     marked, the cursor in yellow, ENTER to drive that car. */
+  _drawVehicleList(menu) {
+    const { ctx, w, h } = this;
+    const n = VEHICLES.length;
+    const rows = 9;
+    const start = clamp(menu.index - ((rows - 1) >> 1), 0, Math.max(0, n - rows));
+    const rowH = 26;
+    const top = h / 2 - (rows * rowH) / 2 + 10;
+
+    ctx.font = '700 26px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#f0e6d8';
+    ctx.shadowColor = 'rgba(20,10,14,0.9)';
+    ctx.shadowBlur = 10;
+    ctx.fillText('SELECT VEHICLE', w / 2, top - 38);
+    ctx.shadowBlur = 0;
+
+    ctx.font = '600 15px ui-sans-serif, system-ui, sans-serif';
+    for (let k = 0; k < rows && start + k < n; k++) {
+      const idx = start + k;
+      const y = top + k * rowH;
+      const name = VEHICLES[idx].name;
+      const sel = idx === menu.index;
+      const isCur = name === this.carName;
+      ctx.fillStyle = sel ? '#ffd54a' : isCur ? '#f0e6d8' : 'rgba(201,184,165,0.75)';
+      ctx.fillText(name, w / 2 + 14, y);
+      if (sel) ctx.fillText('▶', w / 2 - 190, y);
+      else if (isCur) ctx.fillText('●', w / 2 - 190, y);
+    }
+
+    ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(240,230,216,0.55)';
+    ctx.fillText('UP / DOWN  browse    ENTER  drive this vehicle    ESC  back',
+      w / 2, top + rows * rowH + 26);
+    if (start > 0) ctx.fillText('▲', w / 2 + 190, top + 12);
+    if (start + rows < n) ctx.fillText('▼', w / 2 + 190, top + rows * rowH - 6);
   }
 }
 

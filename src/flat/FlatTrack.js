@@ -10,7 +10,7 @@
  * rather than through it.
  */
 import * as THREE from 'three';
-import { Frame, STEP, EDGE_DROP } from '../world/track.js';
+import { Frame, STEP, EDGE_DROP } from '../core/frame.js';
 import {
   heightAt, normalAt, CENTER, WATER_LEVEL, PLAZA_HALF, INTER_X,
 } from './Island.js';

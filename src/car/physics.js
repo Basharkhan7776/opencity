@@ -20,7 +20,7 @@
  */
 import * as THREE from 'three';
 import { clamp, lerp, approach, smoothstep } from '../core/util.js';
-import { EDGE_DROP, Frame, RAMP_LIP_SLOPE } from '../world/track.js';
+import { EDGE_DROP, Frame, RAMP_LIP_SLOPE } from '../core/frame.js';
 import { CAR } from './mesh.js';
 
 const G = 9.81;
@@ -215,8 +215,15 @@ export class Car {
     /* Per-vehicle tuning. `power` scales the whole drivetrain force and
        `drag` scales the aero, so they trade off exactly how a motor does: a
        fast car is a strong one with a slippery shell, a slow one a weak one
-       against the wind. Swapped live on vehicle change via setPerf. */
-    this.perf = { power: 1, drag: 1, ...perf };
+       against the wind. `grip` scales the tyre friction, `steer` the wheel
+       response rate, and `susp` the spring stiffness — below 1 is a soft,
+       bouncy ride (trucks), above 1 a stiff, planted one (race cars).
+       `drift` is how easily the rear breaks away: heavy loads stay glued,
+       sporty cars slide on the handbrake or on power-over. Swapped live on
+       vehicle change via setPerf. */
+    this.perf = {
+      power: 1, drag: 1, grip: 1, steer: 1, susp: 1, drift: 1, ...perf,
+    };
 
     this.pos = new THREE.Vector3();
     /* Where the car was one substep ago, and where it is drawn.
@@ -301,6 +308,10 @@ export class Car {
   setPerf(perf = {}) {
     this.perf.power = perf.power ?? 1;
     this.perf.drag = perf.drag ?? 1;
+    this.perf.grip = perf.grip ?? 1;
+    this.perf.steer = perf.steer ?? 1;
+    this.perf.susp = perf.susp ?? 1;
+    this.perf.drift = perf.drift ?? 1;
   }
 
   /** Drop the car onto the stage at arc length `s`, `lat` metres right of centre. */
@@ -460,7 +471,8 @@ export class Car {
        the car does with it. */
     const centring = Math.abs(wantSteer) < Math.abs(this.steer)
       || wantSteer * this.steer < 0;
-    this._steerToward(wantSteer, centring ? STEER_BACK : STEER_IN, dt);
+    this._steerToward(wantSteer,
+      (centring ? STEER_BACK : STEER_IN) * this.perf.steer, dt);
     /* Kept unscaled because the air needs it. `steer` is a road-wheel angle and
        steerLockAt has already taken three quarters of it away by 160 km/h,
        which is the speed every jump on this stage is taken at. */
@@ -477,7 +489,8 @@ export class Car {
       ? 0
       : clamp((Math.abs(this.lat) - hw * 0.86) / (hw * 0.2), 0, 1);
     // Loose sand at the edges, rock on the berm: both cost grip.
-    const mu = MU_BASE * lerp(1, 0.72, this.offRoad) * (onBerm ? 0.8 : 1);
+    const mu = MU_BASE * lerp(1, 0.72, this.offRoad) * (onBerm ? 0.8 : 1)
+      * this.perf.grip;
 
     /* ---- the launch ----------------------------------------------------
      * Vertical position here is assigned, not integrated: the end of this
@@ -824,8 +837,17 @@ export class Car {
       /* The handbrake takes the rear away, which is how a drift is started.
          It has to take away a lot: at a third of grip the rear still holds on
          and the car merely turns in slightly harder. Locked rear wheels also
-         drag, which is what pivots the car rather than just sliding it. */
-      const muR = muRload * lerp(1, 0.16, this.handbrake);
+         drag, which is what pivots the car rather than just sliding it.
+         How far it goes is the vehicle's drift character: heavy loads keep
+         nearly all rear grip (`drift` low — they refuse to slide), sporty
+         cars drop to almost none. Hard throttle on a drifty car also bleeds
+         rear grip once the rear is sliding (power-over), so the fast cars
+         hold a slide on the pedal instead of only the handbrake. */
+      const driftK = this.perf.drift;
+      const hbRear = lerp(1, 0.16, clamp(this.handbrake * driftK, 0, 1));
+      const powerOver = lerp(1, 0.6,
+        clamp(Math.abs(slipR) / 0.22, 0, 1) * this.throttle * driftK);
+      const muR = muRload * hbRear * powerOver;
 
       /* Telemetry only. How much of each axle's lateral grip the longitudinal
          load has eaten is the single hardest thing to see from outside this
@@ -1326,12 +1348,15 @@ export class Car {
          Accelerating throws load rearward, so the front EXTENDS — hence the
          negation on the front term. Getting this backwards gives a car that
          wheelies under braking, which looks like a physics bug long before
-         anyone works out it is a sign. */
+         anyone works out it is a sign.
+         The target scales with 1/susp: a soft spring sits deeper under the
+         same load (trucks roll and dive), a stiff one barely moves (race
+         cars stay planted). */
       const target = -local
-        + (front ? -1 : 1) * clamp(ax * 0.014, -0.09, 0.09)
-        + (left ? 1 : -1) * clamp(ay * 0.008, -0.06, 0.06);
+        + (front ? -1 : 1) * clamp(ax * 0.014, -0.09, 0.09) / this.perf.susp
+        + (left ? 1 : -1) * clamp(ay * 0.008, -0.06, 0.06) / this.perf.susp;
 
-      const k = 62, c = 11;           // stiff and well damped: a rally car
+      const k = 62 * this.perf.susp, c = 11 * this.perf.susp;
       const acc = (target - this.susp[i]) * k - this.suspVel[i] * c;
       this.suspVel[i] += acc * dt;
       this.susp[i] = clamp(this.susp[i] + this.suspVel[i] * dt, -0.17, 0.17);

@@ -14,53 +14,91 @@ import { clamp, smoothstep } from '../core/util.js';
 import { celMaterial } from '../render/cel.js';
 import {
   heightAt, normalAt, coastAt, mountainFactor, CENTER, WATER_LEVEL,
-  FLAT_R, PLAZA_HALF, PEAKS, inCity, COAST_ROAD_INSET,
+  FLAT_R, PLAZA_HALF, PEAKS, inCity, COAST_ROAD_INSET, ICE_AT,
 } from './Island.js';
 
 const SEED = 91;
 
-/* Asset catalogue: url, base collision radius, uniform scale range [min,max].
-   Trees get a wide height span; rocks use non-uniform axes for random shapes. */
+/* Asset catalogue. Every tree/bush/trunk kind carries a list of VARIANT
+   models from /assets/vegetation/ — each variant knows its base width (w),
+   base height (h) and the uniform scale range that lands its final size in
+   the band the rest of its kind sits in. Rocks keep the forest pack and a
+   single model each. */
+const V = (url, w, h, scale) => ({ url, w, h, scale });
+
 const KINDS = {
+  /* Leafy trees — three shapes, two colourways each (1/4, 2/5, 3/6 share
+     geometry). Scale ranges are per model so every tree lands at
+     roughly 3.5-13 m regardless of which one was picked. */
   tree: {
-    url: '/assets/forest/tree.glb',
-    radius: 1.15,
-    scale: [0.7, 4.6],        // saplings → tall
     tallBias: true,
+    variants: [
+      V('/assets/vegetation/tree_1.glb', 4.34, 6.85, [0.5, 1.9]),
+      V('/assets/vegetation/tree_2.glb', 2.29, 5.24, [0.7, 2.5]),
+      V('/assets/vegetation/tree_3.glb', 1.47, 2.26, [1.6, 5.8]),
+      V('/assets/vegetation/tree_4.glb', 4.34, 6.85, [0.5, 1.9]),
+      V('/assets/vegetation/tree_5.glb', 2.29, 5.24, [0.7, 2.5]),
+      V('/assets/vegetation/tree_6.glb', 1.47, 2.26, [1.6, 5.8]),
+    ],
   },
+  /* Taller pines for the treeline and groves. */
   treeHigh: {
-    url: '/assets/forest/tree-high.glb',
-    radius: 1.35,
-    scale: [0.85, 5.6],
     tallBias: true,
+    variants: [
+      V('/assets/vegetation/tree_pine_1.glb', 2.91, 6.22, [0.55, 2.1]),
+      V('/assets/vegetation/tree_pine_2.glb', 1.84, 5.0, [0.7, 2.6]),
+      V('/assets/vegetation/tree_pine_3.glb', 1.18, 2.01, [1.7, 6.2]),
+    ],
   },
-  plant: {
-    url: '/assets/forest/plant.glb',
-    radius: 0.55,
-    scale: [0.45, 2.6],
+  /* Bare dead trees — a third tree type, sparse in the flats. */
+  dead: {
+    tallBias: true,
+    variants: [
+      V('/assets/vegetation/dead_tree_1.glb', 2.57, 4.68, [0.7, 2.8]),
+      V('/assets/vegetation/dead_tree_2.glb', 1.23, 4.06, [0.85, 3.2]),
+      V('/assets/vegetation/dead_tree_3.glb', 0.7, 1.88, [1.8, 6.8]),
+    ],
+  },
+  /* Low clumps, solid colliders like the old hedge. */
+  bush: {
+    variants: [
+      V('/assets/vegetation/bush_1.glb', 1.45, 1.34, [0.9, 2.3]),
+      V('/assets/vegetation/bush_2.glb', 0.99, 0.92, [1.3, 3.3]),
+      V('/assets/vegetation/bush_3.glb', 1.52, 1.34, [0.9, 2.3]),
+      V('/assets/vegetation/bush_4.glb', 0.99, 0.92, [1.3, 3.3]),
+    ],
+  },
+  /* Stumps. Short, wide, random orientation. */
+  trunk: {
+    variants: [
+      V('/assets/vegetation/trunk_1.glb', 0.34, 0.68, [0.8, 2.4]),
+      V('/assets/vegetation/trunk_2.glb', 0.62, 0.52, [1.0, 3.1]),
+      V('/assets/vegetation/trunk_3.glb', 0.9, 0.47, [1.1, 3.4]),
+      V('/assets/vegetation/trunk_4.glb', 0.98, 0.52, [1.0, 3.1]),
+    ],
   },
   rocksHigh: {
     url: '/assets/forest/rocks-high.glb',
     radius: 2.0,
-    scale: [0.9, 3.2],
+    scale: [1.4, 5.1],
     rock: true,
   },
   rocksLow: {
     url: '/assets/forest/rocks-low.glb',
     radius: 1.4,
-    scale: [0.7, 2.8],
+    scale: [1.1, 4.5],
     rock: true,
   },
   rocksRamp: {
     url: '/assets/forest/rocks-ramp.glb',
     radius: 1.6,
-    scale: [0.8, 2.6],
+    scale: [1.3, 4.2],
     rock: true,
   },
   stones: {
     url: '/assets/forest/stones.glb',
     radius: 0.9,
-    scale: [0.5, 2.4],
+    scale: [0.8, 3.8],
     rock: true,
   },
 };
@@ -93,15 +131,36 @@ function rockTransform(R, lo, hi) {
   };
 }
 
-/**
- * Random bush size: a power curve so most clumps land mid-range while some
- * turn out tiny or oversized, plus a rare big landmark bush.
- */
-function bushScale(R, lo, hi) {
-  const t = Math.pow(R.f(), 0.6);
-  const base = lo + (hi - lo) * t;
-  if (R.chance(0.06)) return base * R.f(1.3, 1.7);
-  return base;
+/* Trees and dead trees: pick a variant, scale it inside the variant's own
+   band so every model lands at the same final size, and size the collider
+   off the model's real width. */
+function placeTree(R, kind, x, y, z) {
+  const v = R.pick(KINDS[kind].variants);
+  const h = treeScale(R, v.scale[0], v.scale[1]);
+  const fat = R.f(0.82, 1.18);   // canopy/trunk width jitter
+  return {
+    placement: {
+      kind, url: v.url, x, y, z,
+      sx: h * fat, sy: h, sz: h * fat,
+      yaw: R.f(0, Math.PI * 2), pitch: 0, roll: 0,
+    },
+    radius: v.w * h * fat * 0.5,
+  };
+}
+
+/* Bushes and stumps: uniform-ish clump with a per-axis jitter, collider from
+   the model's real width. */
+function placeClump(R, kind, x, y, z) {
+  const v = R.pick(KINDS[kind].variants);
+  const s = treeScale(R, v.scale[0], v.scale[1]);
+  return {
+    placement: {
+      kind, url: v.url, x, y, z,
+      sx: s * R.f(0.7, 1.4), sy: s * R.f(0.7, 1.45), sz: s * R.f(0.7, 1.4),
+      yaw: R.f(0, Math.PI * 2), pitch: 0, roll: 0,
+    },
+    radius: v.w * s * 0.5,
+  };
 }
 
 const SPAWN_CLEAR = 55;     // metres kept empty around map centre
@@ -219,62 +278,59 @@ export function planVegetation(graph) {
         else if (roll < 0.40) kind = 'rocksLow';
         else if (roll < 0.52) kind = 'rocksRamp';
         else if (roll < 0.64) kind = 'stones';
-        else if (roll < 0.84) kind = 'treeHigh';
-        else kind = 'tree';
-        /* Fewer trees on snowy tops. */
-        if (y > 48 && (kind === 'tree' || kind === 'treeHigh') && R.chance(0.65)) continue;
+        else if (roll < 0.76) kind = 'treeHigh';
+        else if (roll < 0.90) kind = 'tree';
+        else kind = 'dead';
+        /* Fewer trees high on the slopes, and none on the iced crown. */
+        if (y > 58 && (kind === 'tree' || kind === 'treeHigh' || kind === 'dead')) {
+          if (y > ICE_AT - 2) continue;
+          if (R.chance(0.5)) continue;
+        }
       } else {
-        /* Flats: trees, bushes, and scattered field rocks. */
+        /* Flats: trees of every type, bushes, trunks, and scattered rocks. */
         const roll = R.f();
-        if (roll < 0.32) kind = 'plant';
-        else if (roll < 0.58) kind = 'tree';
-        else if (roll < 0.78) kind = 'treeHigh';
-        else if (roll < 0.88) kind = 'stones';
+        if (roll < 0.30) kind = 'tree';
+        else if (roll < 0.52) kind = 'treeHigh';
+        else if (roll < 0.62) kind = 'dead';
+        else if (roll < 0.76) kind = 'bush';
+        else if (roll < 0.84) kind = 'trunk';
+        else if (roll < 0.90) kind = 'stones';
         else if (roll < 0.95) kind = 'rocksLow';
         else kind = 'rocksRamp';
       }
 
       const def = KINDS[kind];
       let placement;
+      let radius;
       if (def.rock) {
         const t = rockTransform(R, def.scale[0], def.scale[1]);
-        const radius = def.radius * Math.max(t.sx, t.sz) * 0.75;
+        radius = def.radius * Math.max(t.sx, t.sz) * 0.75;
         placement = {
-          kind, x, y, z,
+          kind, url: def.url, x, y, z,
           sx: t.sx, sy: t.sy, sz: t.sz,
           yaw: t.yaw, pitch: t.pitch, roll: t.roll,
         };
-        colliders.push({ x, z, radius, kind });
       } else if (def.tallBias) {
-        /* Trees: wide random height + slight trunk thickness variation. */
-        const h = treeScale(R, def.scale[0], def.scale[1]);
-        const fat = R.f(0.82, 1.18);   // canopy/trunk width jitter
-        placement = {
-          kind, x, y, z,
-          sx: h * fat, sy: h, sz: h * fat,
-          yaw: R.f(0, Math.PI * 2), pitch: 0, roll: 0,
-        };
-        colliders.push({ x, z, radius: def.radius * h * fat * 0.85, kind });
+        const t = placeTree(R, kind, x, y, z);
+        placement = t.placement;
+        radius = t.radius;
       } else {
-        /* Bushes — solid clumps with a wide random size. */
-        const s = bushScale(R, def.scale[0], def.scale[1]);
-        placement = {
-          kind, x, y, z,
-          sx: s * R.f(0.7, 1.4), sy: s * R.f(0.7, 1.45), sz: s * R.f(0.7, 1.4),
-          yaw: R.f(0, Math.PI * 2), pitch: 0, roll: 0,
-        };
-        colliders.push({ x, z, radius: def.radius * s * 0.85, kind });
+        const t = placeClump(R, kind, x, y, z);
+        placement = t.placement;
+        radius = t.radius;
       }
+      colliders.push({ x, z, radius, kind });
       placements.push(placement);
     }
   }
 
-  /* Extra plant belt around the central flats for bush cover. */
-  const bushStep = 14;
-  for (let ix = -FLAT_R * 1.6; ix <= FLAT_R * 1.6; ix += bushStep) {
-    for (let iz = -FLAT_R * 1.6; iz <= FLAT_R * 1.6; iz += bushStep) {
-      const x = CENTER.x + ix + (R.f() - 0.5) * bushStep;
-      const z = CENTER.z + iz + (R.f() - 0.5) * bushStep;
+  /* Plant belt around the central flats — bushes and stumps, so the open
+     ground between town and the treeline has low cover. */
+  const beltStep = 14;
+  for (let ix = -FLAT_R * 1.6; ix <= FLAT_R * 1.6; ix += beltStep) {
+    for (let iz = -FLAT_R * 1.6; iz <= FLAT_R * 1.6; iz += beltStep) {
+      const x = CENTER.x + ix + (R.f() - 0.5) * beltStep;
+      const z = CENTER.z + iz + (R.f() - 0.5) * beltStep;
       const dist = Math.hypot(x - CENTER.x, z - CENTER.z);
       if (dist < SPAWN_CLEAR || dist > FLAT_R * 1.55) continue;
       if (inCity(x, z)) continue;
@@ -282,29 +338,30 @@ export function planVegetation(graph) {
       if (y < MIN_LAND_Y) continue;
       if (normalAt(x, z).y < 0.7) continue;
       if (nearRoad(x, z)) continue;
-      if (!R.chance(0.32)) continue;
-      const s = bushScale(R, 0.5, 2.6);
-      placements.push({
-        kind: 'plant', x, y, z,
-        sx: s * R.f(0.7, 1.4), sy: s * R.f(0.7, 1.45), sz: s * R.f(0.7, 1.4),
-        yaw: R.f(0, Math.PI * 2), pitch: 0, roll: 0,
-      });
-      colliders.push({ x, z, radius: 0.55 * s * 0.85, kind: 'plant' });
+      if (!R.chance(0.3)) continue;
+      const kind = R.chance(0.8) ? 'bush' : 'trunk';
+      const t = placeClump(R, kind, x, y, z);
+      placements.push(t.placement);
+      colliders.push({ x, z, radius: t.radius, kind });
     }
   }
 
-  /* Mountain tree groves — a fixed set of distinct clusters (5 per peak,
-     ~16-20 total) on the treeline shoulders below the snow line, so the
-     peaks read as forested clumps instead of bare scatter. */
-  const GROVES_PER_PEAK = 5;
+  /* Mountain tree groves — a fixed set of distinct clusters (8 per peak,
+     ~24 total) alternating between the treeline shoulders and the crown, so
+     the peaks read as forested clumps right up to the summit. */
+  const GROVES_PER_PEAK = 8;
   for (const peak of PEAKS) {
     for (let k = 0; k < GROVES_PER_PEAK; k++) {
       const ang = R.f(0, Math.PI * 2);
-      const d = peak.r * R.f(0.38, 0.72);
+      /* Alternating bands: shoulder groves and summit groves. */
+      const d = peak.r * (k % 2 ? R.f(0.38, 0.72) : R.f(0.04, 0.3));
       const cx = peak.x + Math.cos(ang) * d;
       const cz = peak.z + Math.sin(ang) * d;
       const cy = heightAt(cx, cz);
-      if (cy < MIN_LAND_Y || cy > 50) continue;
+      /* Trees stop at the ice line so the tallest peak's iced crown stays
+         clear; the two lower peaks never reach it. */
+      const ceil = Math.min(peak.h - 3, ICE_AT - 2);
+      if (cy < MIN_LAND_Y || cy > ceil) continue;
       if (mountainFactor(cx, cz) < 0.35) continue;
       if (inCity(cx, cz)) continue;
       if (normalAt(cx, cz).y < 0.45) continue;
@@ -315,19 +372,13 @@ export function planVegetation(graph) {
         const tx = cx + Math.cos(a) * dd;
         const tz = cz + Math.sin(a) * dd;
         const ty = heightAt(tx, tz);
-        if (ty < MIN_LAND_Y || ty > 52) continue;
+        if (ty < MIN_LAND_Y || ty > ceil + 1) continue;
         if (inCity(tx, tz)) continue;
         if (normalAt(tx, tz).y < 0.4) continue;
         const kind = R.chance(0.7) ? 'treeHigh' : 'tree';
-        const def = KINDS[kind];
-        const h = treeScale(R, def.scale[0], def.scale[1]);
-        const fat = R.f(0.82, 1.18);
-        placements.push({
-          kind, x: tx, y: ty, z: tz,
-          sx: h * fat, sy: h, sz: h * fat,
-          yaw: R.f(0, Math.PI * 2), pitch: 0, roll: 0,
-        });
-        colliders.push({ x: tx, z: tz, radius: def.radius * h * fat * 0.85, kind });
+        const t = placeTree(R, kind, tx, ty, tz);
+        placements.push(t.placement);
+        colliders.push({ x: tx, z: tz, radius: t.radius, kind });
       }
     }
   }
@@ -369,15 +420,9 @@ export function planVegetation(graph) {
       if (normalAt(tx, tz).y < 0.5) continue;
       if (nearRoad(tx, tz)) continue;
       const kind = R.chance(0.55) ? 'tree' : 'treeHigh';
-      const def = KINDS[kind];
-      const h = treeScale(R, def.scale[0], def.scale[1]);
-      const fat = R.f(0.82, 1.18);
-      placements.push({
-        kind, x: tx, y: ty, z: tz,
-        sx: h * fat, sy: h, sz: h * fat,
-        yaw: R.f(0, Math.PI * 2), pitch: 0, roll: 0,
-      });
-      colliders.push({ x: tx, z: tz, radius: def.radius * h * fat * 0.85, kind });
+      const t = placeTree(R, kind, tx, ty, tz);
+      placements.push(t.placement);
+      colliders.push({ x: tx, z: tz, radius: t.radius, kind });
     }
     wildCentres.push({ x: wx, z: wz });
   }
@@ -402,7 +447,7 @@ export function planVegetation(graph) {
       const def = KINDS[kind];
       const t = rockTransform(R, def.scale[0], def.scale[1]);
       placements.push({
-        kind, x, y, z,
+        kind, url: def.url, x, y, z,
         sx: t.sx, sy: t.sy, sz: t.sz,
         yaw: t.yaw, pitch: t.pitch, roll: t.roll,
       });
@@ -520,9 +565,11 @@ function mergeGeometriesUV(list) {
 }
 
 /**
- * Load forest GLBs and build instanced meshes for the placement plan.
+ * Load vegetation GLBs and build instanced meshes for the placement plan.
+ * Grouped by URL, so every variant model in /assets/vegetation becomes its
+ * own instanced mesh.
  * @param {object[]} placements
- * @param {(frac:number)=>void} [onProgress]  called with 0..1 per model kind loaded
+ * @param {(frac:number)=>void} [onProgress]  called with 0..1 per model loaded
  * @returns {Promise<THREE.Group>}
  */
 export async function buildVegetationMeshes(placements, onProgress) {
@@ -531,30 +578,29 @@ export async function buildVegetationMeshes(placements, onProgress) {
   const root = new THREE.Group();
   root.name = 'vegetation';
 
-  /* Group placements by kind. */
-  const byKind = new Map();
+  /* Group placements by URL. */
+  const byUrl = new Map();
   for (const p of placements) {
-    let list = byKind.get(p.kind);
-    if (!list) { list = []; byKind.set(p.kind, list); }
+    if (!p.url) continue;
+    let list = byUrl.get(p.url);
+    if (!list) { list = []; byUrl.set(p.url, list); }
     list.push(p);
   }
 
-  const kinds = [...byKind.keys()];
-  const total = Math.max(1, kinds.length);
+  const urls = [...byUrl.keys()];
+  const total = Math.max(1, urls.length);
   let done = 0;
   const bump = () => onProgress?.(done / total);
 
   const dummy = new THREE.Object3D();
 
-  await Promise.all(kinds.map(async (kind) => {
-    const items = byKind.get(kind);
-    const def = KINDS[kind];
-    if (!def || !items.length) { done++; bump(); return; }
+  await Promise.all(urls.map(async (url) => {
+    const items = byUrl.get(url);
     let gltf;
     try {
-      gltf = await loader.loadAsync(def.url);
+      gltf = await loader.loadAsync(url);
     } catch (err) {
-      console.warn('vegetation load failed', def.url, err);
+      console.warn('vegetation load failed', url, err);
       done++; bump();
       return;
     }
@@ -591,7 +637,7 @@ export async function buildVegetationMeshes(placements, onProgress) {
       map.needsUpdate = true;
     }
     const mesh = new THREE.InstancedMesh(geo, mat, items.length);
-    mesh.name = `veg-${kind}`;
+    mesh.name = `veg-${url.split('/').pop().replace('.glb', '')}`;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.frustumCulled = true;

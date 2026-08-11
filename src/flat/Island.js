@@ -35,7 +35,13 @@ const GRASS_PALETTE = [
   new THREE.Color(0x4f7a3c),  // olive
 ];
 const BEACH = new THREE.Color(0xe8c96a);
-const SNOW = new THREE.Color(0xf2f6fa);
+/* Ice on the tallest peak's crown — a cooler, more glassy white than the
+   old snow band, and only the one mountain crosses the line for it. */
+const ICE = new THREE.Color(0xd8ecfc);
+/* The ice line: land above this height turns white. No terrain reaches it
+   any more (the peaks are cut flat), but the constant stays — vegetation
+   uses it to cap the grove trees at the old snowline. */
+export const ICE_AT = 84;
 const WATER_COLOR = 0x2a6e9a;
 const _cA = new THREE.Color();
 const _cB = new THREE.Color();
@@ -51,9 +57,12 @@ const grainNoise = fbm2(SEED * 181 + 7, 2);    // fine grass speckles
 const spotNoise = fbm2(SEED * 197 + 23, 2);    // clumpy grass spots
 
 /* Soft island radius. Beaches live near the edge; interior stays well above
-   water so the spawn pad is dry and driveable. */
-export const ISLAND_R = PLAZA_HALF * 0.92;       // ~916 m
-export const BEACH_IN = 70;                     // metres of beach slope
+   water so the spawn pad is dry and driveable. The +500 m extension is
+   reverted, so the island is back to the original footprint. */
+export const ISLAND_R = PLAZA_HALF * 0.92 + 60; // ~976 m
+/* Metres of beach slope, 80 m wider than the original 70 so the strip from
+   the coast ring road to the ocean line is ~174 m of sand. */
+export const BEACH_IN = 150;
 export const FLAT_R = 180;                      // central flats radius
 /* Coast ring road sits this far inside the beach band; the beach itself
    starts there so the strip seaward of the road reads as sand, not grass. */
@@ -83,14 +92,13 @@ export function inCity(x, z) {
   return cityFlatten(x, z) > 0.35;
 }
 
-/** Mountain peak sites — shared with vegetation scatter. Sat just beyond the
- *  city's flattening skirt (rr ≈ 600) so the summits rise fully instead of
- *  being levelled by the plateau. */
+/** Former mountain peak sites — kept as anchors for the mountain-tree groves
+ *  and scatter gates. The terrain no longer raises them: every summit is cut
+ *  to road height, so the island is flat outside the city. */
 export const PEAKS = Object.freeze([
-  { x: CENTER.x + 480, z:  360, h: 98,  r: 210 },
+  { x: CENTER.x + 480, z:  360, h: 72,  r: 210 },
   { x: CENTER.x - 460, z: -380, h: 120, r: 250 },
-  { x: CENTER.x +  40, z: -600, h: 86,  r: 180 },
-  { x: CENTER.x - 220, z:  560, h: 74,  r: 160 },
+  { x: CENTER.x - 220, z:  560, h: 66,  r: 160 },
 ]);
 
 /** Shoreline parameters at (x, z). */
@@ -131,23 +139,19 @@ export function heightAt(x, z) {
   const ridgeH = Math.max(0, ridge - 0.52) * 22
     + Math.max(0, ridge2 - 0.55) * 16;
 
-  /* Mountains: a few fixed peaks plus noise so they sit off-center and leave
-     the middle flat. Soft radial falloff keeps slopes climbable. */
-  let mountain = 0;
-  for (const p of PEAKS) {
-    const d = Math.hypot(x - p.x, z - p.z);
-    const t = 1 - smoothstep(p.r * 0.15, p.r, d);
-    if (t > 0) {
-      /* Sharp peak (power falloff) + a little noise for rocky shoulder. */
-      const dome = Math.pow(t, 2.2);
-      const rock = (detailNoise(x / 40, z / 40) - 0.4) * 8 * t;
-      mountain = Math.max(mountain, p.h * dome + rock);
-    }
-  }
-
-  let inland = 4.5 + roll + ridgeH + mountain;
+  let inland = 4.5 + roll + ridgeH;
   /* Central pad slightly raised and very flat so spawn is clean. */
   inland = lerp(inland, 5.2 + roll * 0.15, flatMask);
+
+  /* Remote ring: level the wild land at road height so no land stands above
+     the roads out there — the plateau keeps spreading past the skirt instead
+     of climbing into ridges. Hard cap, nothing spared (mountains included). */
+  const remoteT = 1 - cityFlatten(x, z);
+  if (remoteT > 0.001) {
+    const micro = (detailNoise(x / 55, z / 55) - 0.45) * 0.3;
+    const capY = CITY_BASE_Y + 0.5 + micro;
+    inland = Math.min(inland, capY);
+  }
 
   /* Beach: starts at the coast ring road and lerps down through sea level
      across BEACH_IN metres, so the whole strip between the road and the
@@ -221,8 +225,9 @@ export function landColorAt(x, z, out = new THREE.Color()) {
   const beach0 = beachStart - COAST_ROAD_INSET;
   const beachT = smoothstep(beach0 - 8, beach0 + 12, rr)
     * (1 - smoothstep(edge - 5, edge + 25, rr));
-  /* Snow on high ground — peaks and upper ridges. */
-  const snowT = smoothstep(38, 52, y);
+  /* Ice on high ground — only the tallest peak crosses the ICE_AT line, so
+     it carries the cap and the two lower mountains never see a flake. */
+  const snowT = smoothstep(ICE_AT, ICE_AT + 16, y);
 
   /* ---- multi-shade grass ------------------------------------------------
      Large patches (meadow / olive / lime), medium mottling, and fine grain
@@ -262,7 +267,7 @@ export function landColorAt(x, z, out = new THREE.Color()) {
   }
 
   if (beachT > 0.02) out.lerp(BEACH, clamp(beachT, 0, 1));
-  if (snowT > 0.02) out.lerp(SNOW, clamp(snowT, 0, 1));
+  if (snowT > 0.02) out.lerp(ICE, clamp(snowT, 0, 1));
   return out;
 }
 
@@ -322,7 +327,9 @@ export function mountainFactor(x, z) {
  * @returns {{land: THREE.Mesh, water: THREE.Mesh}}
  */
 export function buildIslandMeshes({ segments = 220 } = {}) {
-  const size = PLAZA_HALF * 2;
+  /* Slightly larger than the island so warped shoreline verts (edge +
+     coastWarp) never fall off the mesh. */
+  const size = (ISLAND_R + 80) * 2;
   const geo = new THREE.PlaneGeometry(size, size, segments, segments);
   geo.rotateX(-Math.PI / 2);
 

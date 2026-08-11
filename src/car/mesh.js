@@ -16,7 +16,7 @@
  * and a high ride.
  */
 import * as THREE from 'three';
-import { mergeGeometries } from '../world/track.js';
+import { mergeGeometries } from '../core/frame.js';
 
 /** A chamfered hexagonal section: flat floor, kicked-out shoulders, narrower roof. */
 function section(hw, yBot, yTop, shoulder = 0.86, tuck = 0.9, shoulderY = 0.38) {

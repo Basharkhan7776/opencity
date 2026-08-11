@@ -73,9 +73,6 @@ const LOW_CITY = [
 const HOUSES = 'abcdefghijklmnopqrstu'.split('').map(
   c => `/assets/house/building-type-${c}.glb`,
 );
-/* The bush hedge asset — the same low wide clump the forest uses, planted
-   shoulder-to-shoulder around house lots. */
-const BUSH = '/assets/forest/plant.glb';
 const LIGHTS = [
   '/assets/road/light-square.glb',
   '/assets/road/light-square-cross.glb',
@@ -323,7 +320,7 @@ export function planCity(seed = CITY_SEED) {
       if (rr > METRO_R - 12) continue;
       if (rr < SPAWN_CLEAR * 0.85) continue;
       if (heightAt(x, z) < WATER_LEVEL + 1) continue;
-      if (!R.chance(0.78)) continue;
+      if (!R.chance(0.52)) continue;
 
       let url, sc, rad, kind;
       /* Towers taper from a dense downtown core out through the inner ring:
@@ -372,41 +369,13 @@ export function planCity(seed = CITY_SEED) {
       if (heightAt(x, z) < WATER_LEVEL + 1) continue;
       /* Keep the mountains clear — no houses on or climbing the peaks. */
       if (mountainFactor(x, z) > 0.25 || heightAt(x, z) > 14) continue;
-      if (!R.chance(0.7)) continue;
+      if (!R.chance(0.45)) continue;
 
       const sc = HOUSE_SCALE * R.f(0.92, 1.12);
       const yaw = R.pick([0, Math.PI / 2, Math.PI, -Math.PI / 2]);
       const url = R.pick(HOUSES);
       addInst(placements, url, x, z, yaw, sc, sc, sc, 'house');
       addCollider(colliders, x, z, sc * MODEL_SPAN * 0.38, 'building');
-
-      /* Bush hedge around the lot, one gap for the drive. A run of plant.glb
-         clumps planted shoulder-to-shoulder on all four edges with the middle
-         of one edge left open. Every bush is a solid collider, so the car
-         bounces off the hedge and can only reach the house through the gap. */
-      const off = sc * MODEL_SPAN * 0.55;
-      const nPer = 5;
-      const sp = (2 * off) / nPer;
-      const open = R.i(0, 3);   /* edge with the drive gap */
-      const inw = [             /* jitter inward keeps the street side clean */
-        { x: 0, z: -1 }, { x: 0, z: 1 },
-        { x: -1, z: 0 }, { x: 1, z: 0 },
-      ];
-      for (let e = 0; e < 4; e++) {
-        const horiz = e < 2;
-        const side = e % 2 === 0 ? 1 : -1;
-        for (let k = 0; k < nPer; k++) {
-          if (e === open && k >= 1 && k <= 3) continue;
-          const t = -off + (k + 0.5) * sp + R.f(-0.3, 0.3);
-          const bx = horiz ? x + t : x + side * off;
-          const bz = horiz ? z + side * off : z + t;
-          const d = R.f(0.1, 0.5);
-          const bs = R.f(1.0, 1.4);
-          addInst(placements, BUSH, bx + inw[e].x * d, bz + inw[e].z * d,
-            R.f(0, Math.PI * 2), bs, bs * R.f(1.15, 1.35), bs, 'fence');
-          addCollider(colliders, bx + inw[e].x * d, bz + inw[e].z * d, 0.9, 'fence');
-        }
-      }
     }
   }
 
@@ -430,26 +399,32 @@ export function planCity(seed = CITY_SEED) {
   const W = rand(rng(seed * 7 + 3));
   const HOUSES_SHORT = HOUSES.slice(0, 14);   // cottages read small-scale
 
-  /* Beach cottages: flat spots seaward of the coast road, above the waterline. */
+  /* Cottages on the flat strip just INSIDE the coast ring road. Nothing
+     sits seaward of the road any more — every house faces the shore from
+     the land side, so the beach band itself stays clear. */
   let beachHouses = 0;
   for (let a = 0; a < TAU && beachHouses < 16; a += 0.09) {
     const dirX = Math.cos(a), dirZ = Math.sin(a);
-    /* Walk the beach band outward to find a dry, flat shelf. */
+    /* Walk the flat strip inward from the ring road. The road position is
+       read from the LOCAL coast sample — the shoreline warp shifts it by
+       several metres across the island, and a house placed against a
+       sampled ring road can sit on the actual tarmac. */
     let spot = null;
     for (let k = 0; k < 10; k++) {
-      const r = ISLAND_R * 0.8 + k * 14;
+      const r = ISLAND_R * 0.75 - k * 14;
       const x = CENTER.x + dirX * r;
       const z = CENTER.z + dirZ * r;
       const { rr, beachStart } = coastAt(x, z);
-      if (rr < beachStart) continue;
+      const roadR = beachStart - COAST_ROAD_INSET;
+      if (rr > roadR - 12) continue;         // inward of the road, with a gap
       const y = heightAt(x, z);
-      if (y < WATER_LEVEL + 1.2 || y > 4.5) continue;
-      if (normalAt(x, z).y < 0.82) continue;
+      if (y < WATER_LEVEL + 3 || y > 6.5) continue;
+      if (normalAt(x, z).y < 0.9) continue;
       spot = { x, z, y };
       break;
     }
     if (!spot) continue;
-    if (!W.chance(0.45)) continue;
+    if (!W.chance(0.28)) continue;
 
     const sc = HOUSE_SCALE * W.f(0.7, 0.95);
     const url = W.pick(HOUSES_SHORT);
@@ -460,12 +435,20 @@ export function planCity(seed = CITY_SEED) {
   }
 
   /* ---- City + wild trees, random and big -------------------------------- */
+  /* The vegetation pack, one entry per model with its base height (h) and
+     width (w), so the scale can land every variant in the same size band. */
   const TREES = [
-    '/assets/house/tree-large.glb',
-    '/assets/house/tree-small.glb',
+    { url: '/assets/vegetation/tree_1.glb', h: 6.85, w: 4.34 },
+    { url: '/assets/vegetation/tree_2.glb', h: 5.24, w: 2.29 },
+    { url: '/assets/vegetation/tree_3.glb', h: 2.26, w: 1.47 },
+    { url: '/assets/vegetation/tree_4.glb', h: 6.85, w: 4.34 },
+    { url: '/assets/vegetation/tree_5.glb', h: 5.24, w: 2.29 },
+    { url: '/assets/vegetation/tree_6.glb', h: 2.26, w: 1.47 },
+    { url: '/assets/vegetation/tree_pine_1.glb', h: 6.22, w: 2.91 },
+    { url: '/assets/vegetation/tree_pine_2.glb', h: 5.0, w: 1.84 },
+    { url: '/assets/vegetation/tree_pine_3.glb', h: 2.01, w: 1.18 },
   ];
-  const treeScale = () => W.f(7, 20) * (W.chance(0.12) ? W.f(1.2, 1.5) : 1);
-  const solidKinds = new Set(['building', 'house', 'fence']);
+  const solidKinds = new Set(['building', 'house']);
   const nearSolid = (x, z, pad) => {
     for (const c of colliders) {
       if (!solidKinds.has(c.kind)) continue;
@@ -478,9 +461,11 @@ export function planCity(seed = CITY_SEED) {
     if (y < WATER_LEVEL + 0.6) return;
     if (normalAt(x, z).y < 0.55) return;
     if (nearSolid(x, z, 3)) return;
-    const s = treeScale();
-    addInst(placements, W.pick(TREES), x, z, W.f(0, TAU), s, s, s, kind);
-    colliders.push({ x, z, radius: s * 0.12, kind: 'tree' });
+    const v = W.pick(TREES);
+    /* 6-15 m of final height, whichever model was drawn. */
+    const s = (W.f(6, 15) * (W.chance(0.12) ? W.f(1.2, 1.5) : 1)) / v.h;
+    addInst(placements, v.url, x, z, W.f(0, TAU), s, s, s, kind);
+    colliders.push({ x, z, radius: v.w * s * 0.5, kind: 'tree' });
   };
 
   /* Scattered yard trees in the residential ring (roads stay clear).
