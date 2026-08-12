@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 import { FlatTrack, ROAD_WIDTH, INTER_X, WATER_LEVEL } from './flat/FlatTrack.js';
 import { buildFlatWorld } from './flat/FlatWorld.js';
+import { Pedestrians, PED_RADIUS } from './flat/Pedestrians.js';
 import { loadCarGLB } from './car/mesh.js';
 import { Car, MAX_RPM, steerLockAt } from './car/physics.js';
 import { ChaseCamera } from './car/camera.js';
@@ -50,6 +51,9 @@ const TIERS = {
    fogged out and not drawn. The island is ~2 km across, so 1 km keeps the
    near half crisp and melts the far side into haze. */
 const VIEW_RADIUS = 500;       // metres — asset render sphere around the car
+/* PED_RADIUS must track this: both are the boundary of what the player can
+   see, and the pedestrians live inside it by construction. */
+if (PED_RADIUS !== VIEW_RADIUS) console.warn('pedestrian radius drifted from VIEW_RADIUS');
 const FOG_NEAR = 300;           // fog starts this far from the camera
 const FOG_FAR = VIEW_RADIUS;    // fully fogged at the edge of the sphere
 const CAM_FAR = FOG_FAR + 100;  // camera far plane, just past the fog
@@ -62,8 +66,10 @@ const CAM_FAR = FOG_FAR + 100;  // camera far plane, just past the fog
    perf drives the feel: power/drag = engine (acceleration, top speed),
    grip = tyre friction, steer = wheel response rate, susp = spring stiffness
    (<1 soft and bouncy — the trucks; >1 stiff and planted — the race cars),
-   drift = how easily the rear breaks away (<1 glued — heavy vehicles won't
-   slide; >1 tail-happy — the fast cars slide on the handbrake or power). */
+   drift = how far the handbrake drops the rear (<1 glued — heavy vehicles
+   refuse to slide; >1 tail-happy — the fast cars light right up). Power
+   can't spin a drifty car on its own: the throttle only sustains a slide
+   once the rear is well past its grip peak, so normal driving grips. */
 const VEHICLES = [
   { name: 'Sports Sedan', url: '/assets/vehicle/sedan-sports.glb', perf: { power: 1.0, drag: 1.0, grip: 1.05, steer: 1.05, susp: 1.15, drift: 0.8 } },
   { name: 'Sedan', url: '/assets/vehicle/sedan.glb', perf: { power: 0.69, drag: 1.0, grip: 1.0, steer: 1.0, susp: 1.0, drift: 0.55 } },
@@ -145,6 +151,10 @@ class Game {
     this.world = world;
     this._assetsLoading = false;
     this._scanWorldChunks();
+
+    /* Trackside pedestrians — ten characters walking the footpaths inside
+       the render sphere. Scene-only (no colliders), so cars pass through. */
+    this.pedestrians = new Pedestrians(this.scene, world.city?.graph);
 
     this.buildCars();
     /* Sun follows the car; aim it at the island centre for the first frame. */
@@ -362,6 +372,10 @@ class Game {
     });
 
     this.hud.update(dt, { speed: p.speed, gear: p.gear });
+
+    /* The walkers. Scene-only, so the car passes through them; they keep
+       themselves inside the render sphere. */
+    if (this.pedestrians) this.pedestrians.update(dt, p.pos.x, p.pos.z);
   }
 
   driverInput() {
@@ -631,8 +645,8 @@ class Game {
     if (this._assetsLoading) return;
     this._assetsLoading = true;
     const w = this.world;
-    let a = 0, b = 0;
-    const bump = () => this._setLoadProgress((a + b) * 0.5);
+    let a = 0, b = 0, c = 0;
+    const bump = () => this._setLoadProgress((a + b + c) / 3);
     const tasks = [];
     if (w.loadCity) {
       tasks.push(w.loadCity({ onProgress: f => { a = f; bump(); } })
@@ -642,6 +656,9 @@ class Game {
       tasks.push(w.loadVegetation({ onProgress: f => { b = f; bump(); } })
         .catch(err => console.warn('vegetation', err)));
     } else b = 1;
+    tasks.push(this.pedestrians.load()
+      .then(() => { c = 1; bump(); })
+      .catch(err => console.warn('pedestrians', err)));
     bump();
     await Promise.all(tasks);
     this._setLoadProgress(1);

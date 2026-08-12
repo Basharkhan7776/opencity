@@ -38,9 +38,8 @@ const BEACH = new THREE.Color(0xe8c96a);
 /* Ice on the tallest peak's crown — a cooler, more glassy white than the
    old snow band, and only the one mountain crosses the line for it. */
 const ICE = new THREE.Color(0xd8ecfc);
-/* The ice line: land above this height turns white. No terrain reaches it
-   any more (the peaks are cut flat), but the constant stays — vegetation
-   uses it to cap the grove trees at the old snowline. */
+/* The ice line: land above this height turns white. Only the tallest of the
+   three mountains crosses it, which is what keeps its crown iced. */
 export const ICE_AT = 84;
 const WATER_COLOR = 0x2a6e9a;
 const _cA = new THREE.Color();
@@ -92,9 +91,10 @@ export function inCity(x, z) {
   return cityFlatten(x, z) > 0.35;
 }
 
-/** Former mountain peak sites — kept as anchors for the mountain-tree groves
- *  and scatter gates. The terrain no longer raises them: every summit is cut
- *  to road height, so the island is flat outside the city. */
+/** Mountain peak sites — shared with vegetation scatter. Sat just beyond the
+ *  city's flattening skirt (rr ≈ 600) so the summits rise fully instead of
+ *  being levelled by the plateau. The tallest (h 120) is the only one above
+ *  the ice line at 84 m; the other two stay green. */
 export const PEAKS = Object.freeze([
   { x: CENTER.x + 480, z:  360, h: 72,  r: 210 },
   { x: CENTER.x - 460, z: -380, h: 120, r: 250 },
@@ -145,12 +145,32 @@ export function heightAt(x, z) {
 
   /* Remote ring: level the wild land at road height so no land stands above
      the roads out there — the plateau keeps spreading past the skirt instead
-     of climbing into ridges. Hard cap, nothing spared (mountains included). */
+     of climbing into ridges. Hard cap; the mountains are the only land that
+     is allowed to stand above it. */
   const remoteT = 1 - cityFlatten(x, z);
+  let capY = Infinity;
   if (remoteT > 0.001) {
     const micro = (detailNoise(x / 55, z / 55) - 0.45) * 0.3;
-    const capY = CITY_BASE_Y + 0.5 + micro;
+    capY = CITY_BASE_Y + 0.5 + micro;
     inland = Math.min(inland, capY);
+  }
+
+  /* Mountains: three fixed peaks beyond the city's flattening skirt, rising
+     from the capped plateau. The tallest (h 120) crosses the ice line at
+     84 m, so its crown reads white; the other two stay below it. Soft
+     radial falloff keeps the slopes climbable. */
+  for (const p of PEAKS) {
+    const d = Math.hypot(x - p.x, z - p.z);
+    const t = 1 - smoothstep(p.r * 0.15, p.r, d);
+    if (t > 0) {
+      /* Sharp peak (power falloff) + a little noise for rocky shoulder. */
+      const dome = Math.pow(t, 2.2);
+      const rock = (detailNoise(x / 40, z / 40) - 0.4) * 8 * t;
+      const rise = p.h * dome + rock;
+      inland = remoteT > 0.001
+        ? Math.max(inland, capY + rise)
+        : Math.max(inland, rise);
+    }
   }
 
   /* Beach: starts at the coast ring road and lerps down through sea level

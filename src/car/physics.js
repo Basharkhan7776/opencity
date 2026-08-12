@@ -840,13 +840,18 @@ export class Car {
          drag, which is what pivots the car rather than just sliding it.
          How far it goes is the vehicle's drift character: heavy loads keep
          nearly all rear grip (`drift` low — they refuse to slide), sporty
-         cars drop to almost none. Hard throttle on a drifty car also bleeds
-         rear grip once the rear is sliding (power-over), so the fast cars
-         hold a slide on the pedal instead of only the handbrake. */
+         cars drop to almost none.
+         Power-over is the pedal's share, and it is gated hard: the rear must
+         be well past its grip peak (~14°, full at ~23°) before throttle
+         bleeds any grip. Below that a drifty car on the throttle holds full
+         rear grip, so bumps, launches and small transients never start or
+         sustain a spin — the handbrake is the only way in, and letting it
+         go lets the car regrip. Once the slide IS deep it still bleeds some
+         (28% at most), so an intentional slide stays on the pedal. */
       const driftK = this.perf.drift;
       const hbRear = lerp(1, 0.16, clamp(this.handbrake * driftK, 0, 1));
-      const powerOver = lerp(1, 0.6,
-        clamp(Math.abs(slipR) / 0.22, 0, 1) * this.throttle * driftK);
+      const overT = clamp((Math.abs(slipR) - 0.25) / 0.15, 0, 1);
+      const powerOver = lerp(1, 0.72, overT * this.throttle * driftK);
       const muR = muRload * hbRear * powerOver;
 
       /* Telemetry only. How much of each axle's lateral grip the longitudinal
