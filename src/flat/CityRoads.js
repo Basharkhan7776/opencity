@@ -279,12 +279,13 @@ function buildSlab(x0, z0, x1, z1, width, lanes, openA, openB) {
 
 /* Zebra crossing — painted stripes across a road arm at a junction. The band
    runs from the junction edge INTO the road for ZEBRA_BAND metres, flat on
-   the deck (DECK + 0.02), spanning the full slab — kerb to kerb across the
-   footpaths, so the crosswalk reads footpath to footpath. */
+   the deck (DECK + 0.02), and stops short of the kerb line — the footpath
+   strip beyond the kerb stays bare concrete, so the crossing reads kerb to
+   kerb, never onto the footpath. */
 function buildZebra(cx, cz, tx, tz, width) {
   const rx = -tz, rz = tx;
   const half = width * 0.5;
-  const span = half + 0.45 + FOOT_W - ZEBRA_INSET;
+  const span = half + 0.45 - ZEBRA_INSET;
   const pos = [], nor = [], idx = [];
   let v = 0;
   for (let k = 0; k < ZEBRA_N; k++) {
