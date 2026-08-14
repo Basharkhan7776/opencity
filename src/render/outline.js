@@ -1139,16 +1139,33 @@ export class CelPipeline {
     /* Normals prepass. The background and the fog are suppressed: a fogged
        normal is a blend of a surface and the fog colour, which decodes to a
        direction that belongs to neither, and every distant crease would ink
-       according to how foggy it was rather than how sharp it was. */
+       according to how foggy it was rather than how sharp it was.
+       Skinned meshes (characters) are excluded from the static overrideMaterial
+       pass so Three.js does not render their unskinned T-pose bind-pose mesh
+       into the normal buffer, eliminating phantom second-body silhouettes. */
     if (this.inkEnabled) {
       const bg = this.scene.background, fog = this.scene.fog;
       this.scene.background = null;
       this.scene.fog = null;
+
+      const skinned = [];
+      this.scene.traverse(o => {
+        if (o.isSkinnedMesh && o.visible) {
+          o.visible = false;
+          skinned.push(o);
+        }
+      });
+
       this.scene.overrideMaterial = this.normalMat;
       r.setRenderTarget(this.normals);
       r.clear();
       r.render(this.scene, this.camera);
       this.scene.overrideMaterial = null;
+
+      for (let i = 0; i < skinned.length; i++) {
+        skinned[i].visible = true;
+      }
+
       this._renderPrepassOptIns(r);
       this.scene.background = bg;
       this.scene.fog = fog;

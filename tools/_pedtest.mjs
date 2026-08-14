@@ -56,7 +56,7 @@ const info = await page.evaluate(async () => {
   return out;
 });
 console.log('INFO', JSON.stringify(info, null, 1));
-await page.screenshot({ path: '/tmp/opencode/peds.png' });
+try { await page.screenshot({ path: 'shots/peds.png', timeout: 5000 }); } catch {}
 console.log('ERRORS', errs.slice(0, 8));
 await browser.close();
 srv.close();

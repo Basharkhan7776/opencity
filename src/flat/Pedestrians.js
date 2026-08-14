@@ -69,17 +69,17 @@ export const PED_RADIUS = 500;      // metres — must track main.js VIEW_RADIUS
 const PED_SPAWN_MIN = 40;           // metres — keep the immediate frame clear
 const PED_SPAWN_MAX = 460;          // metres — inside the fog's useful band
 
-/* How fast they walk, m/s, and the jitter around it. An ambling pace —
-   these people are going somewhere on a nice day, not competing. */
-const PED_SPEED = 1.25;
-const PED_WALK_RANGE = [0.85, 1.12];    // times the walk clip's own tempo
+/* How fast they walk, m/s, and the stride sync. */
+const PED_SPEED = 0.85;
+const IDLE_RATIO = 0.40;            // mixture fraction of straight idle/standing characters
 
-/* The pack's humanoid rig. Feet sit at the root's y=0 (bind pose); the
-   crown of the head mesh reaches ~0.40 in model units on every one of the
-   twelve (same skeleton, shared constants — checked per file). The scale
-   turns that into a life-size person. */
+/* The pack's humanoid rig. Scaled down to compact stylized proportions
+   (PED_HEIGHT = 0.85m) so characters look natural beside cars and blocks. */
 const RIG_HEIGHT = 0.40;
-const PED_HEIGHT = 1.74;
+const PED_HEIGHT = 0.85;
+
+/* Stride length covered per 2-step walk cycle (m) for exact foot-to-ground speed sync. */
+const STRIDE_LEN = 0.58 * (PED_HEIGHT / 0.85);
 
 /* Where on the 2 m footpath strip the walker treads, as a fraction of
    FOOT_W out from the kerb — kept inside the strip, off its outer lip. */
@@ -113,6 +113,7 @@ export class Pedestrians {
     /* One styled copy per model file, shared by every clone. */
     this.models = [];
     this.walks = [];          // walk clip per model, root track stripped
+    this.idles = [];          // idle clip per model (straight upright standing)
     this.peds = [];
 
     this._indexGraph();
@@ -189,11 +190,20 @@ export class Pedestrians {
       /* The gait clip, with its root translation cut — the legs, arms,
          torso and head keep swinging; the walk itself is ours. */
       const walk = THREE.AnimationClip.findByName(gltf.animations, 'walk');
-      const clip = walk ? walk.clone() : null;
-      if (clip) {
-        clip.tracks = clip.tracks.filter(t => !t.name.endsWith('.position'));
+      const walkClip = walk ? walk.clone() : null;
+      if (walkClip) {
+        walkClip.tracks = walkClip.tracks.filter(t => !t.name.endsWith('.position'));
       }
-      this.walks.push(clip);
+      this.walks.push(walkClip);
+
+      /* Idle / straight standing clip */
+      const idle = THREE.AnimationClip.findByName(gltf.animations, 'idle')
+        || THREE.AnimationClip.findByName(gltf.animations, 'static');
+      const idleClip = idle ? idle.clone() : null;
+      if (idleClip) {
+        idleClip.tracks = idleClip.tracks.filter(t => !t.name.endsWith('.position'));
+      }
+      this.idles.push(idleClip);
 
       const scene = gltf.scene;
       /* Same treatment the fleet gets: the pack's colormap through the cel
@@ -219,26 +229,28 @@ export class Pedestrians {
       anchor.visible = false;
       this.root.add(anchor);
 
-      const clip = this.walks[i % this.walks.length];
+      const walkClip = this.walks[i % this.walks.length];
+      const idleClip = this.idles[i % this.idles.length];
       const mixer = new THREE.AnimationMixer(model);
-      let action = null;
-      if (clip) {
-        action = mixer.clipAction(clip);
-        action.time = Math.random() * clip.duration;
-        action.play();
-      }
+
+      const walkAction = walkClip ? mixer.clipAction(walkClip) : null;
+      const idleAction = idleClip ? mixer.clipAction(idleClip) : null;
 
       this.peds.push({
         anchor,
         mixer,
+        walkAction,
+        idleAction,
+        walkClip,
+        idleClip,
         active: false,
+        isIdle: false,
         edge: null,
         t: 0,
         side: 1,
         foot: 0,
         dir: 1,
         speed: 1,
-        pace: 1,
       });
     }
     this.ready = true;
@@ -264,9 +276,38 @@ export class Pedestrians {
       ped.side = Math.random() < 0.5 ? -1 : 1;
       ped.foot = PED_FOOT_FRAC[0] + Math.random() * (PED_FOOT_FRAC[1] - PED_FOOT_FRAC[0]);
       ped.dir = Math.random() < 0.5 ? -1 : 1;
-      ped.speed = PED_SPEED * (0.8 + Math.random() * 0.5);
-      ped.pace = PED_WALK_RANGE[0] + Math.random() * (PED_WALK_RANGE[1] - PED_WALK_RANGE[0]);
-      if (ped.mixer) ped.mixer.timeScale = ped.pace;
+
+      // Mélange of straight upright standing / idle and walking characters
+      ped.isIdle = Math.random() < IDLE_RATIO;
+      if (ped.isIdle) {
+        ped.speed = 0;
+        if (ped.walkAction) ped.walkAction.stop();
+        if (ped.idleAction) {
+          ped.idleAction.reset();
+          ped.idleAction.time = Math.random() * (ped.idleClip ? ped.idleClip.duration : 1);
+          ped.idleAction.play();
+        }
+        if (ped.mixer) ped.mixer.timeScale = 0.85 + Math.random() * 0.3;
+        // Stand straight facing along the footpath or slightly toward the street
+        const baseAngle = Math.atan2(edge.tx, edge.tz) + (Math.random() < 0.5 ? 0 : Math.PI);
+        ped.anchor.rotation.y = baseAngle + (Math.random() - 0.5) * 0.4;
+      } else {
+        ped.speed = PED_SPEED * (0.9 + Math.random() * 0.25);
+        if (ped.idleAction) ped.idleAction.stop();
+        if (ped.walkAction) {
+          ped.walkAction.reset();
+          ped.walkAction.time = Math.random() * (ped.walkClip ? ped.walkClip.duration : 0.66);
+          ped.walkAction.play();
+        }
+        // Exactly sync animation playback rate to translation speed and stride length
+        const clipDur = ped.walkClip ? ped.walkClip.duration : 0.6667;
+        const targetTimeScale = (ped.speed * clipDur) / STRIDE_LEN;
+        if (ped.mixer) ped.mixer.timeScale = targetTimeScale;
+
+        const vx = edge.tx * ped.dir, vz = edge.tz * ped.dir;
+        ped.anchor.rotation.y = Math.atan2(vx, vz);
+      }
+
       ped.active = true;
       return true;
     }
@@ -292,6 +333,7 @@ export class Pedestrians {
   }
 
   _stepPed(ped, dt) {
+    if (ped.isIdle) return;
     const e = ped.edge;
     ped.t += (ped.dir * ped.speed * dt) / e.len;
     if (ped.t < 0.06) { ped.t = 0.06; ped.dir = 1; }
