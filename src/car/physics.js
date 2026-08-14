@@ -988,10 +988,12 @@ export class Car {
       let nz = oldZ + _d.z;
       let newGround = track.heightAt(nx, nz);
       const budget = MAX_LIFT * dt;
-      /* Small steps — the 0.14 m road kerb — are driveable: the tires roll
-         over them, so the car can leave the road and climb back on. Only a
-         rise steeper than a curb (a wall, a cliff) clips the climb. */
-      const CURB = 0.22;
+      /* Small steps — the 0.14 m road deck, kerbs, and footpaths up to 0.38 m —
+         are easily driveable: the tires roll over them, so the car can smoothly
+         mount the road from grass (ingress) and dismount onto grass (egress).
+         Only a rise steeper than a driveable kerb (a building wall, steep cliff)
+         clips the climb. */
+      const CURB = 0.38;
       if (this.height <= 0.35 && newGround - oldGround > CURB) {
         let lo = 0, hi = 1;
         for (let i = 0; i < 8; i++) {
@@ -1344,10 +1346,17 @@ export class Car {
     let sum = 0;
     for (let i = 0; i < 4; i++) {
       const front = i < 2, left = i % 2 === 0;
-      const lat = this.lat + (left ? -1 : 1) * CAR.track * 0.5;
-      const ds = (front ? -1 : 1) * CAR.wheelBase * 0.5;
-      const surf = this.surfaceAt(clamp(this.s + ds, 0, this.track.roadEnd), lat, _p);
-      const local = surf.dot(f.up) - this.surfaceAt(this.s, this.lat, _p2).dot(f.up);
+      let local = 0;
+      if (this.track.freeRoam && typeof this.track.heightAt === 'function') {
+        const wx = this.pos.x + (front ? 1 : -1) * (CAR.wheelBase * 0.5) * this.forward.x + (left ? -1 : 1) * (CAR.track * 0.5) * this.right.x;
+        const wz = this.pos.z + (front ? 1 : -1) * (CAR.wheelBase * 0.5) * this.forward.z + (left ? -1 : 1) * (CAR.track * 0.5) * this.right.z;
+        local = -(this.track.heightAt(wx, wz) - this.track.heightAt(this.pos.x, this.pos.z));
+      } else {
+        const lat = this.lat + (left ? -1 : 1) * CAR.track * 0.5;
+        const ds = (front ? -1 : 1) * CAR.wheelBase * 0.5;
+        const surf = this.surfaceAt(clamp(this.s + ds, 0, this.track.roadEnd), lat, _p);
+        local = surf.dot(f.up) - this.surfaceAt(this.s, this.lat, _p2).dot(f.up);
+      }
 
       /* Target compression, positive meaning that corner is squatting.
          Accelerating throws load rearward, so the front EXTENDS — hence the
