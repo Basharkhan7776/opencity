@@ -372,12 +372,16 @@ export function buildCarFromGLTF(gltf) {
     if (rawWheel) {
       rawWheel.position.set(0, 0, 0);
       rawWheel.scale.multiplyScalar(k);
-      /* A wheel scaled by k is rarely exactly CAR.wheelR, and the difference
-         would sink the tyre through the road or hover it above it — drop the
-         wheel mesh inside its hub so its tread sits on the road. */
-      const r = new THREE.Box3().setFromObject(rawWheel);
-      const radius = (r.max.y - r.min.y) / 2 || 1;
-      spin.position.y = CAR.wheelR - radius;
+      /* A wheel scaled by k is rarely exactly CAR.wheelR (the pack's range
+         here is 0.62–0.93 m), and the difference sinks the tyre through the
+         road or hovers it above it. The box is measured in the wheel's own
+         space (it is parentless here, so the offset needs no hub terms); the
+         hub rests at wheelR − rideHeight during physics, so for the tyre
+         bottom to land on the ground (rideHeight below the root) the spin
+         must sit at −box.min.y − wheelR. This holds whatever the wheel's
+         true radius or where its origin sits in the tyre. */
+      const box = new THREE.Box3().setFromObject(rawWheel);
+      spin.position.y = -box.min.y - CAR.wheelR;
       spin.add(rawWheel);
     }
     hub.add(spin);

@@ -23,12 +23,15 @@ export const FOOT_W = 2;        /* footpath width on each side of the kerb (m) *
 export const DECK = 0.14;       /* deck top above the grass */
 const BASE = 0.3;               /* slab hangs this far below ground */
 const STEP = 6;                 /* station spacing along the centreline */
-/* Zebra crossings at junctions. */
-const ZEBRA_N = 5;              /* stripes per crossing */
-const ZEBRA_LEN = 0.45;         /* stripe depth along the road (m) */
-const ZEBRA_GAP = 0.2;          /* gap between stripes (m) */
-const ZEBRA_INSET = 0.4;        /* stripe ends short of the kerb line (m) */
-const ZEBRA_BAND = ZEBRA_N * ZEBRA_LEN + (ZEBRA_N - 1) * ZEBRA_GAP;
+/* Zebra crossings at junctions: longitudinal stripes along the road direction
+   (vertical relative to the road/driver view) strictly on the asphalt deck,
+   staying clear of the kerbs and footpath. */
+const ZEBRA_LEN = 3.0;          /* stripe length along the road direction (m) */
+const ZEBRA_WIDTH = 0.5;        /* stripe width across the road (m) */
+const ZEBRA_GAP = 0.5;          /* gap between stripes across the road (m) */
+const ZEBRA_INSET = 0.6;        /* stripes stop short of asphalt road edge (m) */
+const ZEBRA_START = 0.2;        /* offset from junction edge into the road arm (m) */
+const ZEBRA_BAND = ZEBRA_START + ZEBRA_LEN + 0.3; /* clear zone for lane dashes (m) */
 
 function makeGeo(pos, col, nor, idx) {
   const g = new THREE.BufferGeometry();
@@ -277,27 +280,43 @@ function buildSlab(x0, z0, x1, z1, width, lanes, openA, openB) {
   return { road: makeGeo(dp, dc, dn, di), walls: makeGeo(wp, wc, wn, wi), marks };
 }
 
-/* Zebra crossing — painted stripes across a road arm at a junction. The band
-   runs from the junction edge INTO the road for ZEBRA_BAND metres, flat on
-   the deck (DECK + 0.02), and stops short of the kerb line — the footpath
-   strip beyond the kerb stays bare concrete, so the crossing reads kerb to
-   kerb, never onto the footpath. */
+/* Zebra crossing — painted longitudinal stripes across a road arm approach at a junction.
+   Stripes run parallel to the road tangent (tx, tz) (vertical to the junction boundary /
+   in the direction of traffic flow), flat on the deck (DECK + 0.02).
+   They are laid across the road width within [-span, span] and stop safely short of the
+   kerb and footpath (ZEBRA_INSET), ensuring no markings touch the footpath. */
 function buildZebra(cx, cz, tx, tz, width) {
   const rx = -tz, rz = tx;
   const half = width * 0.5;
-  const span = half + 0.45 - ZEBRA_INSET;
+  const span = half - ZEBRA_INSET;
   const pos = [], nor = [], idx = [];
   let v = 0;
-  for (let k = 0; k < ZEBRA_N; k++) {
-    const s0 = k * (ZEBRA_LEN + ZEBRA_GAP);
-    const s1 = s0 + ZEBRA_LEN;
-    const y0 = heightAt(cx + tx * s0, cz + tz * s0) + DECK + 0.02;
-    const y1 = heightAt(cx + tx * s1, cz + tz * s1) + DECK + 0.02;
+
+  const stride = ZEBRA_WIDTH + ZEBRA_GAP;
+  const mMax = Math.floor((span - ZEBRA_WIDTH * 0.5) / stride);
+  const s0 = ZEBRA_START;
+  const s1 = ZEBRA_START + ZEBRA_LEN;
+
+  for (let m = -mMax; m <= mMax; m++) {
+    const lCenter = m * stride;
+    const l0 = lCenter - ZEBRA_WIDTH * 0.5;
+    const l1 = lCenter + ZEBRA_WIDTH * 0.5;
+
+    const p00x = cx + tx * s0 + rx * l0, p00z = cz + tz * s0 + rz * l0;
+    const p01x = cx + tx * s0 + rx * l1, p01z = cz + tz * s0 + rz * l1;
+    const p10x = cx + tx * s1 + rx * l0, p10z = cz + tz * s1 + rz * l0;
+    const p11x = cx + tx * s1 + rx * l1, p11z = cz + tz * s1 + rz * l1;
+
+    const y00 = heightAt(p00x, p00z) + DECK + 0.02;
+    const y01 = heightAt(p01x, p01z) + DECK + 0.02;
+    const y10 = heightAt(p10x, p10z) + DECK + 0.02;
+    const y11 = heightAt(p11x, p11z) + DECK + 0.02;
+
     pos.push(
-      cx + tx * s0 - rx * span, y0, cz + tz * s0 - rz * span,
-      cx + tx * s0 + rx * span, y0, cz + tz * s0 + rz * span,
-      cx + tx * s1 - rx * span, y1, cz + tz * s1 - rz * span,
-      cx + tx * s1 + rx * span, y1, cz + tz * s1 + rz * span,
+      p00x, y00, p00z,
+      p01x, y01, p01z,
+      p10x, y10, p10z,
+      p11x, y11, p11z,
     );
     nor.push(0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0);
     idx.push(v, v + 1, v + 2, v + 1, v + 3, v + 2);
