@@ -9,9 +9,8 @@ Optamization in the characters where we have points but when camera see the char
 
 Make a mini map of the city and indecate my vehecle , also remove gare number, and all key information from hud.
 
-remove dead end roads, use l's for joinings.
 
-fix the arrow of the race vehecle. flat arrow with some thickness pointing check points.
+fix the arrow in the race on top of vehecle. flat arrow with some thickness pointing check points.
 
 fix the race cheackpoints formation path for race must be better and connceted roads.
 

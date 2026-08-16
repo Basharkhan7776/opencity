@@ -558,6 +558,9 @@ class Game {
         loadView: idx => this._loadRivalView(idx),
       });
       await race.begin(this.player);
+      this.player.applyTo(this.playerView, 0);
+      if (this.chase?.snap) this.chase.snap(this.player);
+      else if (this.chase?.set) this.chase.set(this.player.pos, this.player.forward);
       if (this.race) this.race.dispose();
       this.setAmbient(false);
       this.race = race;

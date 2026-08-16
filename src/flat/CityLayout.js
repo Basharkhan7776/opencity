@@ -308,6 +308,117 @@ function addPolyline(g, points, width, lanes) {
 }
 
 /**
+ * Eliminate all dead ends in the road network:
+ * 1. Force dangling degree-1 road nodes to connect to neighboring road grid nodes / feeders
+ *    forming clean 90-degree L-corners or T-junctions.
+ * 2. Prune any remaining disconnected stubs that lead off terrain or into water, so that
+ *    every single road in the city forms an interconnected, drivable loop or circuit.
+ */
+function resolveAndConnectDeadEnds(g) {
+  const byId = new Map();
+  const refreshMaps = () => {
+    byId.clear();
+    for (const n of g.nodes) byId.set(n.id, n);
+    g.degree.clear();
+    for (const n of g.nodes) g.degree.set(n.id, 0);
+    for (const e of g.edges) {
+      g.degree.set(e.a, (g.degree.get(e.a) || 0) + 1);
+      g.degree.set(e.b, (g.degree.get(e.b) || 0) + 1);
+    }
+  };
+
+  refreshMaps();
+
+  /* Pass 1: Try to join degree-1 nodes to orthogonal / nearby neighbors (forming clean L-corners) */
+  for (let pass = 0; pass < 3; pass++) {
+    refreshMaps();
+    const deadEnds = g.nodes.filter(n => (g.degree.get(n.id) || 0) === 1);
+    if (!deadEnds.length) break;
+
+    for (const n of deadEnds) {
+      if ((g.degree.get(n.id) || 0) !== 1) continue;
+      const incEdge = g.edges.find(e => e.a === n.id || e.b === n.id);
+      if (!incEdge) continue;
+      const otherId = incEdge.a === n.id ? incEdge.b : incEdge.a;
+      const other = byId.get(otherId);
+      if (!other) continue;
+
+      const curDx = n.x - other.x;
+      const curDz = n.z - other.z;
+      const curLen = Math.hypot(curDx, curDz) || 1;
+      const curDirX = curDx / curLen;
+      const curDirZ = curDz / curLen;
+
+      let bestTarget = null;
+      let bestScore = Infinity;
+
+      for (const target of g.nodes) {
+        if (target.id === n.id || target.id === otherId) continue;
+        const ddx = target.x - n.x;
+        const ddz = target.z - n.z;
+        const dist = Math.hypot(ddx, ddz);
+        if (dist < 5 || dist > 55) continue;
+
+        /* Must be axis-aligned (orthogonal along X or Z), no diagonal tilt */
+        const isAxisAligned = Math.abs(ddx) < 4 || Math.abs(ddz) < 4;
+        if (!isAxisAligned && dist > 18) continue;
+
+        /* Terrain validity check */
+        const midX = (n.x + target.x) * 0.5;
+        const midZ = (n.z + target.z) * 0.5;
+        if (heightAt(midX, midZ) < WATER_LEVEL + 0.5) continue;
+        if (mountainFactor(midX, midZ) > 0.65) continue;
+
+        const dirX = ddx / dist;
+        const dirZ = ddz / dist;
+        /* Dot product: 0 means perpendicular (perfect 90-degree L-joining) */
+        const dot = Math.abs(curDirX * dirX + curDirZ * dirZ);
+        /* Reject diagonal tilt angles */
+        if (dot > 0.35 && dot < 0.85) continue;
+
+        const score = dist * (1.0 + dot * 2.0);
+
+        if (score < bestScore) {
+          bestScore = score;
+          bestTarget = target;
+        }
+      }
+
+      if (bestTarget) {
+        const ka = `${Math.min(n.id, bestTarget.id)}:${Math.max(n.id, bestTarget.id)}`;
+        if (!g._edgeKeys) g._edgeKeys = new Set();
+        if (!g._edgeKeys.has(ka)) {
+          g._edgeKeys.add(ka);
+          g.edges.push({ a: n.id, b: bestTarget.id, width: incEdge.width, lanes: incEdge.lanes });
+          g.degree.set(n.id, (g.degree.get(n.id) || 0) + 1);
+          g.degree.set(bestTarget.id, (g.degree.get(bestTarget.id) || 0) + 1);
+        }
+      }
+    }
+  }
+
+  /* Pass 2: Prune / remove any dangling stubs that cannot be safely joined */
+  let changed = true;
+  while (changed) {
+    changed = false;
+    refreshMaps();
+    const toRemoveIds = new Set();
+    for (const n of g.nodes) {
+      if ((g.degree.get(n.id) || 0) <= 1) {
+        toRemoveIds.add(n.id);
+      }
+    }
+    if (toRemoveIds.size > 0) {
+      g.edges = g.edges.filter(e => !toRemoveIds.has(e.a) && !toRemoveIds.has(e.b));
+      g.nodes = g.nodes.filter(n => !toRemoveIds.has(n.id));
+      changed = true;
+    }
+  }
+
+  refreshMaps();
+}
+
+/**
  * Full city plan: road graph + building/fence placements + colliders.
  */
 export function planCity(seed = CITY_SEED) {
@@ -369,11 +480,12 @@ export function planCity(seed = CITY_SEED) {
     mergedPlacements: resMerged,
   });
 
-  /* ---- Radial feeders (ensure metro ↔ residential links) -------------- */
-  for (let k = 0; k < 8; k++) {
-    const ang = (k / 8) * Math.PI * 2;
+  /* ---- Cardinal Main Avenues (Orthogonal only: East, North, West, South) ---- */
+  /* Remove 4 diagonal corner tilt roads so all city avenues are strictly orthogonal */
+  const CARDINAL_ANGLES = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2];
+  for (const ang of CARDINAL_ANGLES) {
     const pts = [];
-    for (let r = METRO_R - METRO_STEP; r <= RESIDENTIAL_R - 10; r += 14) {
+    for (let r = METRO_R - METRO_STEP; r <= RESIDENTIAL_R + 10; r += 14) {
       pts.push({
         x: CENTER.x + Math.cos(ang) * r,
         z: CENTER.z + Math.sin(ang) * r,
@@ -381,11 +493,11 @@ export function planCity(seed = CITY_SEED) {
     }
     let prev = null;
     for (const p of pts) {
-      const rr = Math.hypot(p.x - CENTER.x, p.z - CENTER.z);
       if (heightAt(p.x, p.z) < WATER_LEVEL + 0.5) { prev = null; continue; }
       const id = addNode(g, p.x, p.z, nk(p.x, p.z));
       if (prev != null) {
-        addEdge(g, prev, id, rr < METRO_R + 40 ? LANE2_W : LANE1_W, rr < METRO_R + 40 ? 2 : 1);
+        /* Maintain consistent 2-lane 14m wide avenue along cardinal axes */
+        addEdge(g, prev, id, LANE2_W, 2);
       }
       prev = id;
     }
@@ -420,27 +532,22 @@ export function planCity(seed = CITY_SEED) {
     addEdge(g, ia, ib, LANE1_W, 1);
   }
 
-  /* Coast ↔ residential feeders: from the residential ring to the beach. */
-  const ringNodes = g.nodes.filter(n => {
-    const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
-    return rr >= RESIDENTIAL_R - RES_STEP && rr <= RESIDENTIAL_R;
-  });
-  for (let k = 0; k < 8; k++) {
-    const ang = (k / 8) * Math.PI * 2 + 0.2;
+  /* Coast ↔ residential feeders: strictly orthogonal cardinal connections to coast */
+  for (const ang of CARDINAL_ANGLES) {
     const dirX = Math.cos(ang), dirZ = Math.sin(ang);
     let start = null, best = Infinity;
-    for (const rn of ringNodes) {
+    for (const rn of g.nodes) {
       const d = Math.hypot(
-        rn.x - CENTER.x - dirX * RESIDENTIAL_R,
-        rn.z - CENTER.z - dirZ * RESIDENTIAL_R,
+        rn.x - (CENTER.x + dirX * RESIDENTIAL_R),
+        rn.z - (CENTER.z + dirZ * RESIDENTIAL_R),
       );
       if (d < best) { best = d; start = rn; }
     }
     if (!start) continue;
     const pts = [];
-    for (let r = RESIDENTIAL_R - RES_STEP + 16; r < ISLAND_R; r += 16) {
-      const x = CENTER.x + Math.cos(ang) * r;
-      const z = CENTER.z + Math.sin(ang) * r;
+    for (let r = RESIDENTIAL_R + 14; r < ISLAND_R; r += 14) {
+      const x = CENTER.x + dirX * r;
+      const z = CENTER.z + dirZ * r;
       const c = coastAt(x, z);
       if (c.rr > c.beachStart - 14) break;
       if (heightAt(x, z) > WATER_LEVEL + 11) break;
@@ -454,6 +561,9 @@ export function planCity(seed = CITY_SEED) {
       prev = id;
     }
   }
+
+  /* ---- 3. Eliminate dead ends: force L-joinings and prune stubs ------- */
+  resolveAndConnectDeadEnds(g);
 
   /* ---- Metro building placements -------------------------------------- */
   for (const b of metroBuildings) {

@@ -28,20 +28,79 @@ function archGeo(radius, tube, yaw) {
   return new THREE.TubeGeometry(curve, steps, tube, 6, false);
 }
 
+/**
+ * Build a flat arrow with thickness (depth).
+ * Drawn in 2D and extruded with crisp bevels, then rotated flat into the XZ plane.
+ * @param {number} thickness - Vertical thickness of the arrow
+ * @param {number} [margin=0] - Inset or outset margin for border casing
+ * @returns {THREE.BufferGeometry}
+ */
+function makeFlatArrowGeo(thickness = 0.18, margin = 0) {
+  const shape = new THREE.Shape();
+  // Length ~ 1.80m, Width ~ 1.15m with aggressive swept wings and tail notch
+  const tipZ = 0.95 + margin * 1.1;
+  const wingX = 0.60 + margin;
+  const wingZ = 0.08 - margin * 0.4;
+  const notchX = 0.28 + margin * 0.5;
+  const notchZ = 0.20 + margin * 0.3;
+  const tailZ = -0.72 - margin;
+  const tailNotchZ = -0.46 - margin * 0.4;
+
+  shape.moveTo(0, tipZ);
+  shape.lineTo(wingX, wingZ);
+  shape.lineTo(notchX, notchZ);
+  shape.lineTo(notchX, tailZ);
+  shape.lineTo(0, tailNotchZ);
+  shape.lineTo(-notchX, tailZ);
+  shape.lineTo(-notchX, notchZ);
+  shape.lineTo(-wingX, wingZ);
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: thickness,
+    bevelEnabled: true,
+    bevelThickness: 0.02,
+    bevelSize: 0.02,
+    bevelSegments: 1,
+  });
+  /* Lay flat horizontally in XZ plane with arrow tip pointing along +Z */
+  geo.rotateX(Math.PI / 2);
+  geo.center();
+  return geo;
+}
+
 function makeArrow() {
   const g = new THREE.Group();
-  const mat = new THREE.MeshBasicMaterial({ color: LIVE });
-  const ink = new THREE.MeshBasicMaterial({ color: INK });
-  const head = new THREE.Mesh(new THREE.ConeGeometry(0.42, 1.05, 4), mat);
-  head.rotation.x = -Math.PI / 2;
-  head.position.z = 0.55;
-  const tail = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 0.7), mat);
-  tail.position.z = -0.15;
-  const outline = new THREE.Mesh(new THREE.ConeGeometry(0.52, 1.2, 4), ink);
-  outline.rotation.x = -Math.PI / 2;
-  outline.position.z = 0.55;
-  outline.position.y = -0.02;
-  g.add(outline, tail, head);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffb800 });
+  const darkBorderMat = new THREE.MeshBasicMaterial({ color: 0x181412 });
+  const highlightMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
+  /* 1. Dark base casing underneath */
+  const borderGeo = makeFlatArrowGeo(0.08, 0.04);
+  const border = new THREE.Mesh(borderGeo, darkBorderMat);
+  border.position.y = -0.06;
+
+  /* 2. Main bright gold/amber flat arrow body with substantial thickness */
+  const bodyGeo = makeFlatArrowGeo(0.18, 0);
+  const body = new THREE.Mesh(bodyGeo, mat);
+  body.position.y = 0.02;
+
+  /* 3. Top accent chevron badges for instant readability */
+  const accentShape = new THREE.Shape();
+  accentShape.moveTo(0, 0.65);
+  accentShape.lineTo(0.32, 0.16);
+  accentShape.lineTo(0.16, 0.22);
+  accentShape.lineTo(0, 0.40);
+  accentShape.lineTo(-0.16, 0.22);
+  accentShape.lineTo(-0.32, 0.16);
+  accentShape.closePath();
+  const accentGeo = new THREE.ExtrudeGeometry(accentShape, { depth: 0.04, bevelEnabled: false });
+  accentGeo.rotateX(Math.PI / 2);
+  accentGeo.center();
+  const accent = new THREE.Mesh(accentGeo, highlightMat);
+  accent.position.y = 0.12;
+
+  g.add(border, body, accent);
   g.userData.mat = mat;
   return g;
 }
@@ -86,6 +145,7 @@ export class RaceMarks {
     this.arrow = makeArrow();
     this.root.add(this.arrow);
     this.current = 1;
+    this._clock = 0;
   }
 
   /** Show the live arch and the next one; aim the roof arrow at the live gate. */
@@ -105,11 +165,16 @@ export class RaceMarks {
     }
 
     const cp = cps[cur];
-    const y = player.pos.y + 2.55;
+    this._clock += 0.016;
+    const hover = Math.sin(this._clock * 4.0) * 0.06;
+    /* Hover cleanly directly above the vehicle cabin roof */
+    const y = player.pos.y + 2.50 + hover;
     this.arrow.position.set(player.pos.x, y, player.pos.z);
     const dx = cp.x - player.pos.x;
     const dz = cp.z - player.pos.z;
-    this.arrow.rotation.set(0, Math.atan2(dx, dz), 0);
+    const targetYaw = Math.atan2(dx, dz);
+    /* Tilting slightly up gives the chase camera behind a full view of the top golden surface */
+    this.arrow.rotation.set(0.18, targetYaw, 0, 'YXZ');
     this.arrow.visible = true;
   }
 

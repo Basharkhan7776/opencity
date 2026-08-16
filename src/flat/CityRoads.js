@@ -86,6 +86,42 @@ function junctionRadius(graph) {
 }
 
 /**
+ * Determine if a node should open as a junction (intersection plate, sidewalk borders, and corner slabs):
+ * True for multi-way junctions (degree >= 3), 90-degree corner turns (L-junctions, degree === 2),
+ * and width transition connections (e.g. 14m wide road connecting to 7m road).
+ */
+function isOpenJunction(n, graph, byId) {
+  const deg = graph.degree.get(n.id) || 0;
+  if (deg >= 3) return true;
+  if (deg === 2) {
+    const incEdges = [];
+    const dirs = [];
+    for (const e of graph.edges) {
+      if (e.a === n.id || e.b === n.id) {
+        incEdges.push(e);
+        const otherId = e.a === n.id ? e.b : e.a;
+        const other = byId.get(otherId);
+        if (other) {
+          const dx = other.x - n.x, dz = other.z - n.z;
+          const len = Math.hypot(dx, dz);
+          if (len > 0.5) dirs.push({ x: dx / len, z: dz / len });
+        }
+      }
+    }
+    /* If different road widths meet (e.g. 14m to 7m), open junction to pave seamless transition */
+    if (incEdges.length === 2 && Math.abs(incEdges[0].width - incEdges[1].width) > 0.5) {
+      return true;
+    }
+    /* If corner turn (L-junction) */
+    if (dirs.length === 2) {
+      const dot = dirs[0].x * dirs[1].x + dirs[0].z * dirs[1].z;
+      if (Math.abs(dot) < 0.75) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Spatial lookup: is a point inside any road slab? Returns metres above the
  * island surface (DECK) or 0. Query ~O(1) via a fixed cell hash.
  * @param {object} graph  road graph (nodes/edges)
@@ -120,12 +156,9 @@ export function buildRoadLift(graph, placements) {
     const len = Math.hypot(dx, dz);
     if (len < 0.5) continue;
     const tx = dx / len, tz = dz / len;
-    /* Only real junctions (degree >= 3) open the road — straight-through
-       nodes keep the arm continuous. */
-    const da = graph.degree.get(e.a) || 0;
-    const db = graph.degree.get(e.b) || 0;
-    const ga = da >= 3 ? Math.min(jr.get(e.a) || 0, len * 0.45) : 0;
-    const gb = db >= 3 ? Math.min(jr.get(e.b) || 0, len * 0.45) : 0;
+    /* Open junctions and L-corners truncate incident road arms */
+    const ga = isOpenJunction(na, graph, byId) ? Math.min(jr.get(e.a) || 0, len * 0.45) : 0;
+    const gb = isOpenJunction(nb, graph, byId) ? Math.min(jr.get(e.b) || 0, len * 0.45) : 0;
     /* Same truncated spans the mesh uses, so the lift matches the deck —
        including the footpath, which is part of the slab. */
     put({
@@ -139,7 +172,7 @@ export function buildRoadLift(graph, placements) {
      0.14 m step, so the open intersection must be lifted too — the grass and
      zebra inside it are visual only. */
   for (const n of graph.nodes) {
-    if ((graph.degree.get(n.id) || 0) < 3) continue;
+    if (!isOpenJunction(n, graph, byId)) continue;
     const r = (jr.get(n.id) || 0) + FOOT_W;
     if (r > 0) put({ ax: n.x - r, az: n.z - r, bx: n.x + r, bz: n.z + r, box: true });
   }
@@ -481,7 +514,7 @@ export function buildRoadNetworkMesh(graph) {
 
   /* Road-colored plates and closed-side footpath borders for every intersection */
   for (const n of graph.nodes) {
-    if ((graph.degree.get(n.id) || 0) < 3) continue;
+    if (!isOpenJunction(n, graph, byId)) continue;
     const r = jr.get(n.id) || 0;
     if (r <= 0) continue;
 
@@ -559,13 +592,10 @@ export function buildRoadNetworkMesh(graph) {
     if (len < 0.5) continue;
     const tx = dx / len, tz = dz / len;
     /* Arms stop at the junction edge — each intersection is filled by a flat
-       road plate rather than a kerbed connection pad. Only real junctions
-       (degree >= 3) open the road; straight-through nodes keep the arm
-       continuous. */
-    const da = graph.degree.get(e.a) || 0;
-    const db = graph.degree.get(e.b) || 0;
-    const ga = da >= 3 ? Math.min(jr.get(e.a) || 0, len * 0.45) : 0;
-    const gb = db >= 3 ? Math.min(jr.get(e.b) || 0, len * 0.45) : 0;
+       road plate rather than a kerbed connection pad. Open junctions (degree >= 3
+       and L-corners) open the road; straight-through nodes keep the arm continuous. */
+    const ga = isOpenJunction(na, graph, byId) ? Math.min(jr.get(e.a) || 0, len * 0.45) : 0;
+    const gb = isOpenJunction(nb, graph, byId) ? Math.min(jr.get(e.b) || 0, len * 0.45) : 0;
     const x0 = na.x + tx * ga, z0 = na.z + tz * ga;
     const x1 = nb.x - tx * gb, z1 = nb.z - tz * gb;
     const built = buildSlab(x0, z0, x1, z1, e.width, e.lanes || 1, ga > 0, gb > 0);
