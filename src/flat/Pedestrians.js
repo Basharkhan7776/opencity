@@ -115,8 +115,22 @@ export class Pedestrians {
     this.walks = [];          // walk clip per model, root track stripped
     this.idles = [];          // idle clip per model (straight upright standing)
     this.peds = [];
+    this.enabled = true;
 
     this._indexGraph();
+  }
+
+  /**
+   * Hide the cast and stop respawns. Used for the whole of a street race so
+   * walkers do not pop onto the course.
+   */
+  setEnabled(on) {
+    this.enabled = !!on;
+    if (this.enabled) return;
+    for (const ped of this.peds) {
+      ped.active = false;
+      if (ped.anchor) ped.anchor.visible = false;
+    }
   }
 
   _indexGraph() {
@@ -348,7 +362,7 @@ export class Pedestrians {
    * Advance the cast. Called once per simulation step from Game.step.
    */
   update(dt, px, pz) {
-    if (!this.ready || this.disposed) return;
+    if (!this.ready || this.disposed || this.enabled === false) return;
     let respawns = 0;
     for (const ped of this.peds) {
       if (ped.mixer) ped.mixer.update(dt);

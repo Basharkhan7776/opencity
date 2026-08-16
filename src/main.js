@@ -20,7 +20,13 @@ import { Driver } from './car/driver.js';
 import { Input } from './core/input.js';
 import { celMaterial } from './render/cel.js';
 import { CelPipeline } from './render/outline.js';
-import { clamp } from './core/util.js';
+import { clamp, formatTime } from './core/util.js';
+import { generateRoute } from './race/path.js';
+import {
+  CityRace,
+  RACE_LENGTHS, RACE_LENGTH_LABELS,
+  RACE_DIFFS, RACE_DIFF_LABELS, RACE_MAX_LAPS,
+} from './race/city.js';
 
 /* Silent audio stub — real Audio engine disabled for now. */
 const Audio = class {
@@ -222,6 +228,16 @@ class Game {
     this.hud.setCarName(VEHICLES[this.vehicleIndex].name);
     this.hudOn = q.get('hud') !== '0';
 
+    this.race = null;
+    this.ambientEnabled = true;
+    this.raceSetup = {
+      vehicle: this.vehicleIndex,
+      lengthIdx: 1,
+      laps: 3,
+      difficulty: 1,
+    };
+    this.menu = null;
+
     this.resize();
     addEventListener('resize', () => this.resize());
   }
@@ -296,17 +312,22 @@ class Game {
     this.input.update(dt);
 
     /* While paused the world is not redrawn — see frame() — and the only
-       thing that runs is the menu shell: RESUME / CHANGE VEHICLE / RESTART,
-       and the garage list that CHANGE VEHICLE opens. */
+       thing that runs is the menu shell. */
     if (this.paused) {
       this._menuStep();
       return;
     }
 
-    /* Escape opens the pause menu. */
     if (this.input.pausePressed) this.togglePause();
 
-    if (this.fly) {
+    if (this.race?.over) {
+      if (this.input.confirmPressed || this.input.resetPressed) this.endRace();
+      this.hud.race = this.race ? this.race.hud() : null;
+      this.hud.update(dt, { speed: this.player.speed, gear: this.player.gear });
+      return;
+    }
+
+    if (this.fly && !this.race) {
       this.flyStep(dt);
       this.pipeline.update(dt, { speed: 0 });
       this.hud.update(dt, { speed: 0, gear: 0 });
@@ -314,27 +335,37 @@ class Game {
     }
 
     this.time += dt;
-    if (this.input.resetPressed) this.respawn();
+    if (!this.race && this.input.resetPressed) this.respawn();
 
     const p = this.player;
     p.lastImpact = 0;
     p.landingForce = 0;
 
-    /* Fixed 120 Hz substeps, exactly as the rally ran them. */
-    this._simAcc += dt;
-    let n = 0;
-    while (this._simAcc >= SUBSTEP && n < MAX_SUBSTEPS) {
-      p.step(SUBSTEP, this.driverInput());
-      this._simAcc -= SUBSTEP;
-      n++;
+    const holding = !!(this.race && this.race.holding);
+    if (holding && this.input.skipPressed) this.race.skipCountdown();
+
+    if (!holding) {
+      this._simAcc += dt;
+      let n = 0;
+      while (this._simAcc >= SUBSTEP && n < MAX_SUBSTEPS) {
+        p.step(SUBSTEP, this.driverInput());
+        this._simAcc -= SUBSTEP;
+        n++;
+      }
+      if (n >= MAX_SUBSTEPS) this._simAcc = 0;
     }
-    if (n >= MAX_SUBSTEPS) this._simAcc = 0;
     const alpha = this._simAcc / SUBSTEP;
 
-    /* Drove into the sea — back onto a random road. */
+    if (this.race) this.race.step(dt, p);
+
+    /* Drove into the sea — back onto a random road. Mid-race, snap back
+       onto the route instead of throwing the run away. */
     if (this._isSubmerged(p)) {
-      this._teleportToRandomRoad();
-      this.chase.started = false;
+      if (this.race && !this.race.over) this.race.rescue(p);
+      else if (!this.race) {
+        this._teleportToRandomRoad();
+        this.chase.started = false;
+      }
     }
 
     if (this.playerView) p.applyTo(this.playerView, alpha);
@@ -373,11 +404,12 @@ class Game {
       shoreDistance: 1e9, shoreDrop: 0, oceanSide: 1, openness: 0,
     });
 
+    this.hud.race = this.race ? this.race.hud() : null;
     this.hud.update(dt, { speed: p.speed, gear: p.gear });
 
-    /* The walkers. Scene-only, so the car passes through them; they keep
-       themselves inside the render sphere. */
-    if (this.pedestrians) this.pedestrians.update(dt, p.pos.x, p.pos.z);
+    if (this.ambientEnabled && this.pedestrians) {
+      this.pedestrians.update(dt, p.pos.x, p.pos.z);
+    }
   }
 
   driverInput() {
@@ -389,7 +421,7 @@ class Game {
   togglePause() {
     this.paused = !this.paused;
     if (this.paused) {
-      this.menu = { view: 'main', index: 0 };
+      this.menu = { view: 'main', index: 0, liveRace: !!this.race };
       this.audio.stop();
       this._exitPointerLock();
       this._setCursorVisible(true);
@@ -421,27 +453,46 @@ class Game {
 
   /* ---- pause menu shell ------------------------------------------------ */
 
-  /* Menu navigation on the shell edges (Input.menuUp/menuDown/confirm).
-     'main' is RESUME / CHANGE VEHICLE / RESTART; 'vehicles' is the garage
-     list. Esc steps back one view, or resumes from the top view. */
+  /* Menu navigation. Views: main, vehicles, race. Esc steps back one view,
+     or resumes from the top view. */
+  _menuItems() {
+    return this.race
+      ? ['RESUME', 'LEAVE RACE']
+      : ['RESUME', 'RACE', 'CHANGE VEHICLE', 'RESTART'];
+  }
+
   _menuStep() {
     const m = this.menu;
     const i = this.input;
     if (!m) return;
+    m.liveRace = !!this.race;
+    m.setup = this.raceSetup;
+    if (this._switching) return;
     if (i.pausePressed) {
-      if (m.view === 'vehicles') { m.view = 'main'; return; }
+      if (m.view === 'vehicles' || m.view === 'race') { m.view = 'main'; m.index = 0; return; }
       this.togglePause();
       return;
     }
+    if (m.view === 'race') return this._raceMenuStep();
     if (m.view === 'main') {
-      if (i.menuUpPressed) m.index = (m.index + 2) % 3;
-      else if (i.menuDownPressed) m.index = (m.index + 1) % 3;
+      const items = this._menuItems();
+      const n = items.length;
+      if (i.menuUpPressed) m.index = (m.index + n - 1) % n;
+      else if (i.menuDownPressed) m.index = (m.index + 1) % n;
       else if (i.confirmPressed) {
-        if (m.index === 0) this.togglePause();                    // RESUME
-        else if (m.index === 1) {                                 // CHANGE VEHICLE
+        const pick = items[m.index];
+        if (pick === 'RESUME') this.togglePause();
+        else if (pick === 'RACE') { m.view = 'race'; m.index = 0; }
+        else if (pick === 'CHANGE VEHICLE') {
           m.view = 'vehicles';
           m.index = this.vehicleIndex;
-        } else { this.respawn(); this.togglePause(); }            // RESTART
+        } else if (pick === 'RESTART') {
+          this.respawn();
+          this.togglePause();
+        } else if (pick === 'LEAVE RACE') {
+          this.endRace();
+          this.togglePause();
+        }
       }
       return;
     }
@@ -451,11 +502,102 @@ class Game {
     else if (i.confirmPressed) this._chooseVehicle(m.index);
   }
 
+  _raceMenuStep() {
+    const m = this.menu;
+    const i = this.input;
+    const s = this.raceSetup;
+    const rows = 5; /* vehicle, length, laps, difficulty, START */
+    if (i.menuUpPressed) m.index = (m.index + rows - 1) % rows;
+    else if (i.menuDownPressed) m.index = (m.index + 1) % rows;
+    else if (i.menuLeftPressed || i.menuRightPressed) {
+      const dir = i.menuRightPressed ? 1 : -1;
+      if (m.index === 0) {
+        s.vehicle = (s.vehicle + dir + VEHICLES.length) % VEHICLES.length;
+      } else if (m.index === 1) {
+        s.lengthIdx = (s.lengthIdx + dir + RACE_LENGTHS.length) % RACE_LENGTHS.length;
+      } else if (m.index === 2) {
+        s.laps = (s.laps + dir + RACE_MAX_LAPS + 1) % (RACE_MAX_LAPS + 1);
+      } else if (m.index === 3) {
+        s.difficulty = (s.difficulty + dir + RACE_DIFFS.length) % RACE_DIFFS.length;
+      }
+    } else if (i.confirmPressed && m.index === 4) {
+      this._startRace();
+    }
+  }
+
+  setAmbient(on) {
+    this.ambientEnabled = !!on;
+    this.pedestrians?.setEnabled(this.ambientEnabled);
+  }
+
+  async _startRace() {
+    if (this._switching) return;
+    const graph = this.world?.city?.graph;
+    if (!graph) return;
+    this._switching = true;
+    let started = false;
+    let race = null;
+    try {
+      const s = this.raceSetup;
+      const route = generateRoute(graph, {
+        length: RACE_LENGTHS[s.lengthIdx],
+        loop: s.laps > 0,
+        seed: (Math.random() * 0xffffffff) >>> 0,
+      });
+      if (!route) return;
+      await this._loadVehicle(s.vehicle);
+      race = new CityRace({
+        track: this.track,
+        scene: this.scene,
+        route,
+        laps: s.laps,
+        difficulty: RACE_DIFFS[s.difficulty],
+        vehicles: VEHICLES,
+        playerVehicle: s.vehicle,
+        heightAt: (x, z) => this.track.heightAt(x, z),
+        loadView: idx => this._loadRivalView(idx),
+      });
+      await race.begin(this.player);
+      if (this.race) this.race.dispose();
+      this.setAmbient(false);
+      this.race = race;
+      started = true;
+      this.chase.started = false;
+      this.lookYaw = 0;
+      this.lookPitch = 0;
+      this.resetSimClock();
+      if (this.paused) this.togglePause();
+    } catch (err) {
+      console.warn('race start failed', err);
+      if (!started) race?.dispose();
+    } finally {
+      this._switching = false;
+      if (!started) this.setAmbient(true);
+    }
+  }
+
+  async _loadRivalView(idx) {
+    const v = VEHICLES[idx];
+    const view = await loadCarGLB(v.url, v.wheel);
+    this._styleView(view);
+    return view;
+  }
+
+  endRace() {
+    if (!this.race) return;
+    this.race.dispose();
+    this.race = null;
+    this.hud.race = null;
+    this.setAmbient(true);
+    this.resetSimClock();
+  }
+
   /** Swap to the chosen garage entry, drop on a random road, resume. */
   async _chooseVehicle(idx) {
     if (this._switching) return;
     this._switching = true;
     this.vehicleIndex = idx;
+    this.raceSetup.vehicle = idx;
     try {
       await this._loadVehicle(idx);
       this._teleportToRandomRoad();
@@ -784,6 +926,7 @@ class Hud {
     this.w = 0; this.h = 0; this.dpr = 1;
     this.speed = 0; this.gear = 1;
     this.carName = '';
+    this.race = null;
   }
 
   resize(w, h, dpr) {
@@ -809,6 +952,8 @@ class Hud {
       return;
     }
 
+    if (this.race) this._drawRace(ctx, w, h);
+
     /* Speed, bottom right. */
     const kmh = Math.round(this.speed * 3.6);
     ctx.textAlign = 'right';
@@ -828,7 +973,10 @@ class Hud {
     ctx.textAlign = 'left';
     ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(240,230,216,0.55)';
-    ctx.fillText('WASD / ARROWS  drive   MOUSE  look   V  swap car   R  reset   ESC  menu   CTRL+SHIFT+C  fly cam', 24, h - 20);
+    const hint = this.race
+      ? 'WASD / ARROWS  drive   MOUSE  look   ESC  menu   ENTER  skip countdown'
+      : 'WASD / ARROWS  drive   MOUSE  look   R  reset   ESC  menu   CTRL+SHIFT+C  fly cam';
+    ctx.fillText(hint, 24, h - 20);
 
     /* Current vehicle, bottom centre. */
     if (this.carName) {
@@ -850,6 +998,7 @@ class Hud {
     ctx.textAlign = 'center';
 
     if (menu?.view === 'vehicles') return this._drawVehicleList(menu);
+    if (menu?.view === 'race') return this._drawRaceSetup(menu);
 
     ctx.font = '700 34px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = '#f0e6d8';
@@ -861,7 +1010,9 @@ class Hud {
     ctx.fillStyle = '#c9b8a5';
     ctx.fillText(this.carName || '', w / 2, h / 2 - 60);
 
-    const items = ['RESUME', 'CHANGE VEHICLE', 'RESTART'];
+    const items = menu?.liveRace
+      ? ['RESUME', 'LEAVE RACE']
+      : ['RESUME', 'RACE', 'CHANGE VEHICLE', 'RESTART'];
     ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
     for (let k = 0; k < items.length; k++) {
       const y = h / 2 + k * 34;
@@ -875,7 +1026,115 @@ class Hud {
     }
     ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(240,230,216,0.55)';
-    ctx.fillText('UP / DOWN  choose    ENTER  select    ESC  back', w / 2, h / 2 + 130);
+    ctx.fillText('UP / DOWN  choose    ENTER  select    ESC  back', w / 2, h / 2 + 16 + items.length * 34);
+  }
+
+  _drawRaceSetup(menu) {
+    const { ctx, w, h } = this;
+    const s = menu.setup || { vehicle: 0, lengthIdx: 1, laps: 3, difficulty: 1 };
+    const lapsLabel = s.laps === 0 ? 'SPRINT' : (s.laps === 1 ? '1 LAP' : s.laps + ' LAPS');
+    const rows = [
+      ['VEHICLE', VEHICLES[s.vehicle]?.name?.toUpperCase() || ''],
+      ['LENGTH', RACE_LENGTH_LABELS[s.lengthIdx] || ''],
+      ['LAPS', lapsLabel],
+      ['DIFFICULTY', RACE_DIFF_LABELS[s.difficulty] || ''],
+      ['START RACE', ''],
+    ];
+
+    ctx.font = '700 28px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#f0e6d8';
+    ctx.shadowColor = 'rgba(20,10,14,0.9)';
+    ctx.shadowBlur = 10;
+    ctx.fillText('RACE', w / 2, h / 2 - 130);
+    ctx.shadowBlur = 0;
+
+    ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
+    for (let k = 0; k < rows.length; k++) {
+      const y = h / 2 - 70 + k * 36;
+      const sel = k === menu.index;
+      ctx.fillStyle = sel ? '#ffd54a' : 'rgba(201,184,165,0.8)';
+      if (sel) ctx.fillText('▶', w / 2 - 220, y);
+      ctx.textAlign = 'left';
+      ctx.fillText(rows[k][0], w / 2 - 190, y);
+      if (rows[k][1]) {
+        ctx.textAlign = 'right';
+        ctx.fillStyle = sel ? '#f0e6d8' : 'rgba(240,230,216,0.75)';
+        ctx.fillText('<  ' + rows[k][1] + '  >', w / 2 + 220, y);
+      }
+      ctx.textAlign = 'center';
+    }
+
+    ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(240,230,216,0.55)';
+    ctx.fillText('UP / DOWN  row    LEFT / RIGHT  value    ENTER  start    ESC  back',
+      w / 2, h / 2 + 140);
+  }
+
+  _drawRace(ctx, w, h) {
+    const r = this.race;
+    if (r.results) return this._drawRaceResults(ctx, w, h, r.results);
+
+    ctx.textAlign = 'center';
+    ctx.shadowColor = 'rgba(20,10,14,0.9)';
+    ctx.shadowBlur = 8;
+    ctx.font = '700 28px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#f0e6d8';
+    const ord = r.position + (
+      r.position % 10 === 1 && r.position !== 11 ? 'ST'
+        : r.position % 10 === 2 && r.position !== 12 ? 'ND'
+          : r.position % 10 === 3 && r.position !== 13 ? 'RD' : 'TH'
+    );
+    ctx.fillText(ord + ' / ' + r.fieldSize, w / 2, 36);
+    ctx.font = '600 20px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#ffd54a';
+    ctx.fillText(formatTime(r.time), w / 2, 62);
+    if (r.laps > 0) {
+      ctx.font = '600 15px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = '#c9b8a5';
+      ctx.fillText('LAP ' + r.lap + ' / ' + r.laps, w / 2, 84);
+    }
+    ctx.shadowBlur = 0;
+
+    const cd = r.countdown;
+    if (cd) {
+      ctx.save();
+      ctx.globalAlpha = clamp(cd.alpha, 0, 1);
+      ctx.translate(w / 2, h * 0.35);
+      ctx.scale(cd.scale, cd.scale);
+      ctx.font = '800 96px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = cd.go ? '#6f8f38' : '#d8462a';
+      ctx.strokeStyle = '#241812';
+      ctx.lineWidth = 10;
+      ctx.strokeText(cd.text, 0, 0);
+      ctx.fillText(cd.text, 0, 0);
+      ctx.restore();
+    }
+  }
+
+  _drawRaceResults(ctx, w, h, e) {
+    ctx.fillStyle = 'rgba(15,10,14,0.45)';
+    ctx.fillRect(0, 0, w, h);
+    ctx.textAlign = 'center';
+    ctx.shadowColor = 'rgba(20,10,14,0.9)';
+    ctx.shadowBlur = 12;
+    ctx.font = '700 22px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = e.pos === 1 ? '#6f8f38' : '#f0e6d8';
+    ctx.fillText('FINISH', w / 2, h / 2 - 86);
+    ctx.font = '800 54px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#ffd54a';
+    ctx.fillText(e.label, w / 2, h / 2 - 22);
+    ctx.shadowBlur = 0;
+    ctx.font = '600 22px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#f0e6d8';
+    ctx.fillText(formatTime(e.time), w / 2, h / 2 + 18);
+    if (e.laps > 0 && e.bestLap != null) {
+      ctx.font = '500 15px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = '#c9b8a5';
+      ctx.fillText('BEST LAP  ' + formatTime(e.bestLap), w / 2, h / 2 + 46);
+    }
+    ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(240,230,216,0.55)';
+    ctx.fillText('ENTER  OR  R   BACK TO THE CITY', w / 2, h / 2 + 88);
   }
 
   /* The garage list — a scrolling window over VEHICLES, the current car

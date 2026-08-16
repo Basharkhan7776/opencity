@@ -61,6 +61,8 @@ const KEYS = {
      stopped and the car cannot see them. */
   menuUp: ['ArrowUp', 'KeyW'],
   menuDown: ['ArrowDown', 'KeyS'],
+  menuLeft: ['ArrowLeft', 'KeyA'],
+  menuRight: ['ArrowRight', 'KeyD'],
   /* Enter for the keyboard, Space because the thumb is already there. Enter
      is also the countdown's skip; the two are read in states that cannot
      coexist — nothing may be stepped while a menu is up, so there is no
@@ -102,6 +104,7 @@ const PAD = {
   south: 0, east: 1, west: 2, north: 3,
   l2: 6, r2: 7, select: 8, start: 9,
   dpadUp: 12, dpadDown: 13,
+  dpadLeft: 14, dpadRight: 15,
 };
 /* How far the left stick has to be pushed before it counts as a menu
    keystroke, and how far it has to come back before it can count again. The
@@ -170,6 +173,8 @@ export class Input {
     this.pausePressed = false;
     this.menuUpPressed = false;
     this.menuDownPressed = false;
+    this.menuLeftPressed = false;
+    this.menuRightPressed = false;
     this.confirmPressed = false;
     this._pressedThisFrame = new Set();
     /* A gamepad is polled and not evented, so its edges have to be
@@ -179,6 +184,7 @@ export class Input {
        long as the button is held. */
     this._padWas = [];
     this._padMenu = 0;           // -1 up, +1 down, 0 centred — latched
+    this._padMenuX = 0;          // -1 left, +1 right, 0 centred — latched
 
     this._onDown = e => {
       if (e.repeat) return;
@@ -293,6 +299,13 @@ export class Input {
       this._padMenu = Math.sign(ay);
       stick = this._padMenu;     // +1 is stick DOWN on every standard mapping
     }
+    const axMenu = pad ? (pad.axes[0] || 0) : 0;
+    let stickX = 0;
+    if (Math.abs(axMenu) < PAD_MENU_OFF) this._padMenuX = 0;
+    else if (Math.abs(axMenu) > PAD_MENU_ON && this._padMenuX !== Math.sign(axMenu)) {
+      this._padMenuX = Math.sign(axMenu);
+      stickX = this._padMenuX;
+    }
 
     /* Start pauses. A player holding a pad has no Escape key within reach,
        and Start is the button every console has meant this with for thirty
@@ -301,6 +314,8 @@ export class Input {
     this.pausePressed = this.pressed('pause') || padEdge(PAD.start);
     this.menuUpPressed = this.pressed('menuUp') || padEdge(PAD.dpadUp) || stick < 0;
     this.menuDownPressed = this.pressed('menuDown') || padEdge(PAD.dpadDown) || stick > 0;
+    this.menuLeftPressed = this.pressed('menuLeft') || padEdge(PAD.dpadLeft) || stickX < 0;
+    this.menuRightPressed = this.pressed('menuRight') || padEdge(PAD.dpadRight) || stickX > 0;
     this.confirmPressed = this.pressed('confirm') || padEdge(PAD.south);
     /* B backs out of a menu, which on this one means RESUME. Folded into the
        pause edge because that is exactly what pause means while a menu is

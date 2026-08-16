@@ -9,6 +9,10 @@ Optamization in the characters where we have points but when camera see the char
 
 Make a mini map of the city and indecate my vehecle , also remove gare number, and all key information from hud.
 
+remove dead end roads, use l's for joinings.
 
+fix the arrow of the race vehecle. flat arrow with some thickness pointing check points.
 
-Making the racing mechanism where in esc manu have option race select the vehecle, lenght of the race, laps (if 0 laps will on loop path else loop path), only 6 cars will race and diffulcity (easy, medium, hard). From this data every time it make a path for the vehecle to race on we follow the checkpoints and lap the race, my vehecle have arrow on top indicate the direction the direction of ext checkpoint. Every time from this props will generate path for race and checkpoints(for this lenght this checkpoints). dificulty how computer cars will follow the path and checkpoints. we also get meta data in hud position, lap and timing. Also charaters and vehecles which randomly spawn on the road will not spawn during the race.
+fix the race cheackpoints formation path for race must be better and connceted roads.
+
+Map making algo better where path should be smoother and connected roads in race map formation.
