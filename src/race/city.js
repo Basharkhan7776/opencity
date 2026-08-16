@@ -11,17 +11,15 @@ export const RACE_LENGTH_LABELS = ['400 M', '800 M', '1.5 KM', '2.5 KM'];
 export const RACE_DIFFS = ['easy', 'medium', 'hard'];
 export const RACE_DIFF_LABELS = ['EASY', 'MEDIUM', 'HARD'];
 export const RACE_MAX_LAPS = 8;
-export const RACE_FIELD = 6;
+export const RACE_FIELD = 4;
 
-const ROW = 6.5;
+const ROW = 7.0;
 const LAT = 2.3;
 const HYST = 1.0;
 const CONTACT_R = 2.35;
 
-/* 5 AI ahead of the player, two abreast. Last slot is the player. */
+/* 3 AI ahead of the player, two abreast. Last slot is the player (3 rivals + player = 4). */
 const GRID = [
-  [ROW * 2, LAT],
-  [ROW * 2, -LAT],
   [ROW, LAT],
   [ROW, -LAT],
   [0, LAT],

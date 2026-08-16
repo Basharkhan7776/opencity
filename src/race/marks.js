@@ -11,21 +11,17 @@ const LIVE = 0xf0b429;
 const NEXT = 0xe8d4a8;
 const INK = 0x241812;
 
-function archGeo(radius, tube, yaw) {
+function archGeo(radius, tube) {
   const pts = [];
-  const steps = 18;
+  const steps = 24;
   for (let i = 0; i <= steps; i++) {
-    const a = Math.PI * i / steps;
+    const a = (Math.PI * i) / steps;
     const lat = Math.cos(a) * radius;
     const up = Math.sin(a) * radius;
-    pts.push(new THREE.Vector3(
-      -Math.sin(yaw) * lat,
-      up,
-      Math.cos(yaw) * lat,
-    ));
+    pts.push(new THREE.Vector3(lat, up, 0));
   }
   const curve = new THREE.CatmullRomCurve3(pts);
-  return new THREE.TubeGeometry(curve, steps, tube, 6, false);
+  return new THREE.TubeGeometry(curve, steps, tube, 8, false);
 }
 
 /**
@@ -133,8 +129,8 @@ export class RaceMarks {
       const nextMat = new THREE.MeshBasicMaterial({
         color: NEXT, transparent: true, opacity: 0.55, depthWrite: false,
       });
-      const live = new THREE.Mesh(archGeo(cp.radius, 0.18, cp.yaw), liveMat);
-      const soon = new THREE.Mesh(archGeo(cp.radius * 0.92, 0.12, cp.yaw), nextMat);
+      const live = new THREE.Mesh(archGeo(cp.radius, 0.20), liveMat);
+      const soon = new THREE.Mesh(archGeo(cp.radius * 0.92, 0.14), nextMat);
       live.visible = false;
       soon.visible = false;
       group.add(live, soon);
@@ -160,8 +156,18 @@ export class RaceMarks {
 
     for (let i = 0; i < this.gates.length; i++) {
       const g = this.gates[i];
-      g.live.visible = i === cur;
-      g.soon.visible = i === nxt;
+      const isLive = i === cur;
+      const isSoon = i === nxt;
+      g.live.visible = isLive;
+      g.soon.visible = isSoon;
+
+      /* Realtime orientation: center of semicircle rotates and points directly to the player's vehicle */
+      if (isLive || isSoon) {
+        const cp = cps[i];
+        const dx = player.pos.x - cp.x;
+        const dz = player.pos.z - cp.z;
+        g.group.rotation.y = Math.atan2(dx, dz);
+      }
     }
 
     const cp = cps[cur];

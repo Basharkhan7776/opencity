@@ -224,7 +224,7 @@ class Game {
     addEventListener('pointerdown', wake, { once: true });
     addEventListener('keydown', wake, { once: true });
 
-    this.hud = new Hud(document.getElementById('hud'));
+    this.hud = new Hud(document.getElementById('hud'), this.world?.city?.graph);
     this.hud.setCarName(VEHICLES[this.vehicleIndex].name);
     this.hudOn = q.get('hud') !== '0';
 
@@ -323,14 +323,26 @@ class Game {
     if (this.race?.over) {
       if (this.input.confirmPressed || this.input.resetPressed) this.endRace();
       this.hud.race = this.race ? this.race.hud() : null;
-      this.hud.update(dt, { speed: this.player.speed, gear: this.player.gear });
+      this.hud.update(dt, {
+        speed: this.player.speed,
+        playerX: this.player.pos.x,
+        playerZ: this.player.pos.z,
+        playerYaw: this.player.yaw,
+        race: this.race,
+      });
       return;
     }
 
     if (this.fly && !this.race) {
       this.flyStep(dt);
       this.pipeline.update(dt, { speed: 0 });
-      this.hud.update(dt, { speed: 0, gear: 0 });
+      this.hud.update(dt, {
+        speed: 0,
+        playerX: this.camera.position.x,
+        playerZ: this.camera.position.z,
+        playerYaw: this.flyYaw || 0,
+        race: null,
+      });
       return;
     }
 
@@ -405,7 +417,13 @@ class Game {
     });
 
     this.hud.race = this.race ? this.race.hud() : null;
-    this.hud.update(dt, { speed: p.speed, gear: p.gear });
+    this.hud.update(dt, {
+      speed: p.speed,
+      playerX: p.pos.x,
+      playerZ: p.pos.z,
+      playerYaw: p.yaw,
+      race: this.race,
+    });
 
     if (this.ambientEnabled && this.pedestrians) {
       this.pedestrians.update(dt, p.pos.x, p.pos.z);
