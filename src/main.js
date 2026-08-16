@@ -71,26 +71,26 @@ const CAM_FAR = FOG_FAR + 100;  // camera far plane, just past the fog
    can't spin a drifty car on its own: the throttle only sustains a slide
    once the rear is well past its grip peak, so normal driving grips. */
 const VEHICLES = [
-  { name: 'Sports Sedan', url: '/assets/vehicle/sedan-sports.glb', perf: { power: 1.0, drag: 1.0, grip: 1.05, steer: 1.05, susp: 1.15, drift: 0.8 } },
-  { name: 'Sedan', url: '/assets/vehicle/sedan.glb', perf: { power: 0.69, drag: 1.0, grip: 1.0, steer: 1.0, susp: 1.0, drift: 0.55 } },
-  { name: 'Hatchback', url: '/assets/vehicle/hatchback-sports.glb', perf: { power: 0.59, drag: 1.0, grip: 0.98, steer: 1.0, susp: 0.9, drift: 0.6 } },
-  { name: 'SUV', url: '/assets/vehicle/suv.glb', perf: { power: 0.72, drag: 1.0, grip: 1.0, steer: 0.9, susp: 0.7, drift: 0.3 } },
-  { name: 'Luxury SUV', url: '/assets/vehicle/suv-luxury.glb', perf: { power: 0.88, drag: 1.05, grip: 1.0, steer: 0.9, susp: 0.7, drift: 0.3 } },
-  { name: 'Race', url: '/assets/vehicle/race.glb', perf: { power: 1.58, drag: 0.8, grip: 5.0, steer: 1.0, susp: 10.0, drift: 0.1 } },
-  { name: 'Future Race', url: '/assets/vehicle/race-future.glb', perf: { power: 1.72, drag: 0.9, grip: 1.35, steer: 1.35, susp: 2.1, drift: 0.35 } },
-  { name: 'Police', url: '/assets/vehicle/police.glb', perf: { power: 0.92, drag: 1.0, grip: 1.05, steer: 1.05, susp: 1.1, drift: 0.75 } },
-  { name: 'Taxi', url: '/assets/vehicle/taxi.glb', perf: { power: 0.49, drag: 1.0, grip: 0.95, steer: 0.95, susp: 0.9, drift: 0.7 } },
-  { name: 'Van', url: '/assets/vehicle/van.glb', perf: { power: 0.44, drag: 1.0, grip: 0.9, steer: 0.85, susp: 0.5, drift: 0.2 } },
-  { name: 'Delivery', url: '/assets/vehicle/delivery.glb', perf: { power: 0.4, drag: 1.15, grip: 0.9, steer: 0.85, susp: 0.5, drift: 0.2 } },
-  { name: 'Delivery Flat', url: '/assets/vehicle/delivery-flat.glb', perf: { power: 0.42, drag: 1.1, grip: 0.9, steer: 0.85, susp: 0.5, drift: 0.2 } },
-  { name: 'Truck', url: '/assets/vehicle/truck.glb', perf: { power: 0.55, drag: 1.35, grip: 0.85, steer: 0.8, susp: 0.45, drift: 0.12 } },
-  { name: 'Flatbed Truck', url: '/assets/vehicle/truck-flat.glb', perf: { power: 0.52, drag: 1.3, grip: 0.85, steer: 0.8, susp: 0.45, drift: 0.12 } },
-  { name: 'Garbage Truck', url: '/assets/vehicle/garbage-truck.glb', perf: { power: 0.38, drag: 1.45, grip: 0.8, steer: 0.75, susp: 0.4, drift: 0.08 } },
-  { name: 'Firetruck', url: '/assets/vehicle/firetruck.glb', perf: { power: 0.7, drag: 1.4, grip: 0.85, steer: 0.8, susp: 0.5, drift: 0.18 } },
-  { name: 'Ambulance', url: '/assets/vehicle/ambulance.glb', perf: { power: 0.75, drag: 1.2, grip: 0.9, steer: 0.85, susp: 0.55, drift: 0.25 } },
-  { name: 'Tractor', url: '/assets/vehicle/tractor.glb', perf: { power: 0.35, drag: 1.25, grip: 0.8, steer: 0.7, susp: 0.4, drift: 0.05 } },
-  { name: 'Tractor Shovel', url: '/assets/vehicle/tractor-shovel.glb', perf: { power: 0.32, drag: 1.3, grip: 0.75, steer: 0.65, susp: 0.35, drift: 0.04 } },
-  { name: 'Police Tractor', url: '/assets/vehicle/tractor-police.glb', perf: { power: 0.36, drag: 1.25, grip: 0.8, steer: 0.7, susp: 0.4, drift: 0.05 } },
+  { name: 'Sports Sedan', url: '/assets/vehicle/sedan-sports.glb', wheel: '/assets/vehicle/wheel-racing.glb', perf: { power: 1.0, drag: 1.0, grip: 1.05, steer: 1.05, susp: 1.15, drift: 0.8 } },
+  { name: 'Sedan', url: '/assets/vehicle/sedan.glb', wheel: '/assets/vehicle/wheel-default.glb', perf: { power: 0.69, drag: 1.0, grip: 1.0, steer: 1.0, susp: 1.0, drift: 0.55 } },
+  { name: 'Hatchback', url: '/assets/vehicle/hatchback-sports.glb', wheel: '/assets/vehicle/wheel-default.glb', perf: { power: 0.59, drag: 1.0, grip: 0.98, steer: 1.0, susp: 0.9, drift: 0.6 } },
+  { name: 'SUV', url: '/assets/vehicle/suv.glb', wheel: '/assets/vehicle/wheel-dark.glb', perf: { power: 0.72, drag: 1.0, grip: 1.0, steer: 0.9, susp: 0.7, drift: 0.3 } },
+  { name: 'Luxury SUV', url: '/assets/vehicle/suv-luxury.glb', wheel: '/assets/vehicle/wheel-dark.glb', perf: { power: 0.88, drag: 1.05, grip: 1.0, steer: 0.9, susp: 0.7, drift: 0.3 } },
+  { name: 'Race', url: '/assets/vehicle/race.glb', wheel: '/assets/vehicle/wheel-racing.glb', perf: { power: 1.58, drag: 0.8, grip: 5.0, steer: 1.0, susp: 10.0, drift: 0.1 } },
+  { name: 'Future Race', url: '/assets/vehicle/race-future.glb', wheel: '/assets/vehicle/wheel-racing.glb', perf: { power: 1.72, drag: 0.9, grip: 1.35, steer: 1.35, susp: 2.1, drift: 0.35 } },
+  { name: 'Police', url: '/assets/vehicle/police.glb', wheel: '/assets/vehicle/wheel-dark.glb', perf: { power: 0.92, drag: 1.0, grip: 1.05, steer: 1.05, susp: 1.1, drift: 0.75 } },
+  { name: 'Taxi', url: '/assets/vehicle/taxi.glb', wheel: '/assets/vehicle/wheel-default.glb', perf: { power: 0.49, drag: 1.0, grip: 0.95, steer: 0.95, susp: 0.9, drift: 0.7 } },
+  { name: 'Van', url: '/assets/vehicle/van.glb', wheel: '/assets/vehicle/wheel-default.glb', perf: { power: 0.44, drag: 1.0, grip: 0.9, steer: 0.85, susp: 0.5, drift: 0.2 } },
+  { name: 'Delivery', url: '/assets/vehicle/delivery.glb', wheel: '/assets/vehicle/wheel-default.glb', perf: { power: 0.4, drag: 1.15, grip: 0.9, steer: 0.85, susp: 0.5, drift: 0.2 } },
+  { name: 'Delivery Flat', url: '/assets/vehicle/delivery-flat.glb', wheel: '/assets/vehicle/wheel-default.glb', perf: { power: 0.42, drag: 1.1, grip: 0.9, steer: 0.85, susp: 0.5, drift: 0.2 } },
+  { name: 'Truck', url: '/assets/vehicle/truck.glb', wheel: '/assets/vehicle/wheel-truck.glb', perf: { power: 0.55, drag: 1.35, grip: 0.85, steer: 0.8, susp: 0.45, drift: 0.12 } },
+  { name: 'Flatbed Truck', url: '/assets/vehicle/truck-flat.glb', wheel: '/assets/vehicle/wheel-truck.glb', perf: { power: 0.52, drag: 1.3, grip: 0.85, steer: 0.8, susp: 0.45, drift: 0.12 } },
+  { name: 'Garbage Truck', url: '/assets/vehicle/garbage-truck.glb', wheel: '/assets/vehicle/wheel-truck.glb', perf: { power: 0.38, drag: 1.45, grip: 0.8, steer: 0.75, susp: 0.4, drift: 0.08 } },
+  { name: 'Firetruck', url: '/assets/vehicle/firetruck.glb', wheel: '/assets/vehicle/wheel-truck.glb', perf: { power: 0.7, drag: 1.4, grip: 0.85, steer: 0.8, susp: 0.5, drift: 0.18 } },
+  { name: 'Ambulance', url: '/assets/vehicle/ambulance.glb', wheel: '/assets/vehicle/wheel-truck.glb', perf: { power: 0.75, drag: 1.2, grip: 0.9, steer: 0.85, susp: 0.55, drift: 0.25 } },
+  { name: 'Tractor', url: '/assets/vehicle/tractor.glb', wheel: { front: '/assets/vehicle/wheel-tractor-front.glb', back: '/assets/vehicle/wheel-tractor-back.glb' }, perf: { power: 0.35, drag: 1.25, grip: 0.8, steer: 0.7, susp: 0.4, drift: 0.05 } },
+  { name: 'Tractor Shovel', url: '/assets/vehicle/tractor-shovel.glb', wheel: { front: '/assets/vehicle/wheel-tractor-front.glb', back: '/assets/vehicle/wheel-tractor-back.glb' }, perf: { power: 0.32, drag: 1.3, grip: 0.75, steer: 0.65, susp: 0.35, drift: 0.04 } },
+  { name: 'Police Tractor', url: '/assets/vehicle/tractor-police.glb', wheel: { front: '/assets/vehicle/wheel-tractor-dark-front.glb', back: '/assets/vehicle/wheel-tractor-dark-back.glb' }, perf: { power: 0.36, drag: 1.25, grip: 0.8, steer: 0.7, susp: 0.4, drift: 0.05 } },
 ];
 
 class Game {
@@ -259,7 +259,7 @@ class Game {
     const v = VEHICLES[idx];
     if (this.vehicleViews.has(v.name)) return this.vehicleViews.get(v.name);
     if (this.vehiclesLoading.has(v.name)) return this.vehiclesLoading.get(v.name);
-    const p = loadCarGLB(v.url).then(view => {
+    const p = loadCarGLB(v.url, v.wheel).then(view => {
       this._styleView(view);
       this.vehicleViews.set(v.name, view);
       return view;
@@ -269,9 +269,11 @@ class Game {
   }
 
   async _loadVehicle(idx) {
+    this.vehicleIndex = idx;
     const v = VEHICLES[idx];
+    if (!v) return;
     const view = await this._setVehicle(idx);
-    if (VEHICLES[this.vehicleIndex] !== v) return;   // user moved on while loading
+    if (this.vehicleIndex !== idx) return;   // user moved on while loading
     this.player.setPerf(v.perf);
     if (this.playerView && this.playerView.root.parent === this.scene) {
       this.scene.remove(this.playerView.root);

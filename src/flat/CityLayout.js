@@ -152,41 +152,148 @@ function nk(x, z) {
 }
 
 /**
- * Orthogonal grid of interconnected roads inside a radius.
+ * Orthogonal grid of interconnected roads with neighboring empty cells merged
+ * into larger empty super-cells (plazas, open superblocks, park blocks).
  * step = centreline spacing; width/lanes = ribbon size.
  */
-function addGrid(g, step, radius, width, lanes, { ringMin = 0 } = {}) {
+function addMergedGrid(g, step, radius, width, lanes, { ringMin = 0, occupiedCells = new Set(), mergedPlacements = [] } = {}) {
   const n = Math.floor(radius / step);
-  /* Horizontal lines (constant z). */
-  for (let j = -n; j <= n; j++) {
-    const z = CENTER.z + j * step;
-    let prev = null;
-    for (let i = -n; i <= n; i++) {
-      const x = CENTER.x + i * step;
-      const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
-      if (rr < ringMin || rr > radius) { prev = null; continue; }
-      if (heightAt(x, z) < WATER_LEVEL + 0.6) { prev = null; continue; }
-      if (mountainFactor(x, z) > 0.62) { prev = null; continue; }
-      const id = addNode(g, x, z, nk(x, z));
-      if (prev != null) addEdge(g, prev, id, width, lanes);
-      prev = id;
-    }
-  }
-  /* Vertical lines (constant x). */
+
+  const isValidCell = (i, j) => {
+    const xc = CENTER.x + (i + 0.5) * step;
+    const zc = CENTER.z + (j + 0.5) * step;
+    const rr = Math.hypot(xc - CENTER.x, zc - CENTER.z);
+    if (rr < ringMin || rr > radius - 8) return false;
+    if (heightAt(xc, zc) < WATER_LEVEL + 0.6) return false;
+    if (mountainFactor(xc, zc) > 0.55) return false;
+    return true;
+  };
+
+  const ck = (i, j) => `${i},${j}`;
+  const validCells = new Set();
+  const emptyCells = new Set();
+
   for (let i = -n; i <= n; i++) {
-    const x = CENTER.x + i * step;
-    let prev = null;
     for (let j = -n; j <= n; j++) {
-      const z = CENTER.z + j * step;
-      const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
-      if (rr < ringMin || rr > radius) { prev = null; continue; }
-      if (heightAt(x, z) < WATER_LEVEL + 0.6) { prev = null; continue; }
-      if (mountainFactor(x, z) > 0.62) { prev = null; continue; }
-      const id = addNode(g, x, z, nk(x, z));
-      if (prev != null) addEdge(g, prev, id, width, lanes);
-      prev = id;
+      if (isValidCell(i, j)) {
+        validCells.add(ck(i, j));
+        if (!occupiedCells.has(ck(i, j))) {
+          emptyCells.add(ck(i, j));
+        }
+      }
     }
   }
+
+  /* Merge neighboring empty cells into larger compound empty cells */
+  const merged = new Set();
+  const suppressedH = new Set(); /* Horizontal interior edges between (i, j+1) and (i+1, j+1) */
+  const suppressedV = new Set(); /* Vertical interior edges between (i+1, j) and (i+1, j+1) */
+
+  const hKey = (i, j) => `${i},${j}`;
+  const vKey = (i, j) => `${i},${j}`;
+
+  /* Pass 1: 2x2 superblocks */
+  for (let i = -n; i < n; i++) {
+    for (let j = -n; j < n; j++) {
+      const c00 = ck(i, j), c10 = ck(i + 1, j), c01 = ck(i, j + 1), c11 = ck(i + 1, j + 1);
+      if (emptyCells.has(c00) && emptyCells.has(c10) && emptyCells.has(c01) && emptyCells.has(c11)) {
+        if (!merged.has(c00) && !merged.has(c10) && !merged.has(c01) && !merged.has(c11)) {
+          merged.add(c00); merged.add(c10); merged.add(c01); merged.add(c11);
+          suppressedH.add(hKey(i, j + 1));
+          suppressedH.add(hKey(i + 1, j + 1));
+          suppressedV.add(vKey(i + 1, j));
+          suppressedV.add(vKey(i + 1, j + 1));
+          mergedPlacements.push({
+            x: CENTER.x + (i + 1) * step,
+            z: CENTER.z + (j + 1) * step,
+            size: step * 2,
+            type: '2x2',
+          });
+        }
+      }
+    }
+  }
+
+  /* Pass 2: 2x1 horizontal pairs */
+  for (let i = -n; i < n; i++) {
+    for (let j = -n; j <= n; j++) {
+      const c00 = ck(i, j), c10 = ck(i + 1, j);
+      if (emptyCells.has(c00) && emptyCells.has(c10)) {
+        if (!merged.has(c00) && !merged.has(c10)) {
+          merged.add(c00); merged.add(c10);
+          suppressedV.add(vKey(i + 1, j));
+          mergedPlacements.push({
+            x: CENTER.x + (i + 1) * step,
+            z: CENTER.z + (j + 0.5) * step,
+            w: step * 2, h: step,
+            type: '2x1',
+          });
+        }
+      }
+    }
+  }
+
+  /* Pass 3: 1x2 vertical pairs */
+  for (let i = -n; i <= n; i++) {
+    for (let j = -n; j < n; j++) {
+      const c00 = ck(i, j), c01 = ck(i, j + 1);
+      if (emptyCells.has(c00) && emptyCells.has(c01)) {
+        if (!merged.has(c00) && !merged.has(c01)) {
+          merged.add(c00); merged.add(c01);
+          suppressedH.add(hKey(i, j + 1));
+          mergedPlacements.push({
+            x: CENTER.x + (i + 0.5) * step,
+            z: CENTER.z + (j + 1) * step,
+            w: step, h: step * 2,
+            type: '1x2',
+          });
+        }
+      }
+    }
+  }
+
+  const isNodeValid = (i, j) => {
+    const x = CENTER.x + i * step;
+    const z = CENTER.z + j * step;
+    const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
+    if (rr < ringMin || rr > radius) return false;
+    if (heightAt(x, z) < WATER_LEVEL + 0.6) return false;
+    if (mountainFactor(x, z) > 0.62) return false;
+    return true;
+  };
+
+  const nodeId = (i, j) => {
+    const x = CENTER.x + i * step;
+    const z = CENTER.z + j * step;
+    return addNode(g, x, z, nk(x, z));
+  };
+
+  /* Horizontal edges: connecting (i, j) to (i+1, j) */
+  for (let j = -n; j <= n; j++) {
+    for (let i = -n; i < n; i++) {
+      if (suppressedH.has(hKey(i, j))) continue;
+      if (isNodeValid(i, j) && isNodeValid(i + 1, j)) {
+        const idA = nodeId(i, j);
+        const idB = nodeId(i + 1, j);
+        addEdge(g, idA, idB, width, lanes);
+      }
+    }
+  }
+
+  /* Vertical edges: connecting (i, j) to (i, j+1) */
+  for (let i = -n; i <= n; i++) {
+    for (let j = -n; j < n; j++) {
+      if (suppressedV.has(vKey(i, j))) continue;
+      if (isNodeValid(i, j) && isNodeValid(i, j + 1)) {
+        const idA = nodeId(i, j);
+        const idB = nodeId(i, j + 1);
+        addEdge(g, idA, idB, width, lanes);
+      }
+    }
+  }
+
+  /* Prune isolated degree-0 nodes */
+  g.nodes = g.nodes.filter(node => (g.degree.get(node.id) || 0) > 0);
 }
 
 /** Polyline path of connected edges. */
@@ -209,11 +316,58 @@ export function planCity(seed = CITY_SEED) {
   const colliders = [];
   const g = makeGraph();
 
-  /* ---- 2-lane metro grid (connected +) -------------------------------- */
-  addGrid(g, METRO_STEP, METRO_R, LANE2_W, 2);
+  /* ---- 1. Metro grid planning with neighbor empty cell combining --------- */
+  const metroN = Math.floor(METRO_R / METRO_STEP);
+  const metroOccupied = new Set();
+  const metroBuildings = [];
 
-  /* ---- 1-lane residential grid (ring around metro) -------------------- */
-  addGrid(g, RES_STEP, RESIDENTIAL_R, LANE1_W, 1, { ringMin: METRO_R + 8 });
+  for (let i = -metroN; i <= metroN; i++) {
+    for (let j = -metroN; j <= metroN; j++) {
+      const x = CENTER.x + (i + 0.5) * METRO_STEP;
+      const z = CENTER.z + (j + 0.5) * METRO_STEP;
+      const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
+      if (rr > METRO_R - 12) continue;
+      if (rr < SPAWN_CLEAR * 0.85) continue;
+      if (heightAt(x, z) < WATER_LEVEL + 1) continue;
+      if (!R.chance(0.52)) continue;
+
+      metroOccupied.add(`${i},${j}`);
+      metroBuildings.push({ i, j, x, z, rr });
+    }
+  }
+
+  const metroMerged = [];
+  addMergedGrid(g, METRO_STEP, METRO_R, LANE2_W, 2, {
+    occupiedCells: metroOccupied,
+    mergedPlacements: metroMerged,
+  });
+
+  /* ---- 2. Residential grid planning with neighbor empty cell combining ---- */
+  const resN = Math.floor(RESIDENTIAL_R / RES_STEP);
+  const resOccupied = new Set();
+  const resHouses = [];
+
+  for (let i = -resN; i <= resN; i++) {
+    for (let j = -resN; j <= resN; j++) {
+      const x = CENTER.x + (i + 0.5) * RES_STEP;
+      const z = CENTER.z + (j + 0.5) * RES_STEP;
+      const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
+      if (rr < METRO_R + 16 || rr > RESIDENTIAL_R - 12) continue;
+      if (heightAt(x, z) < WATER_LEVEL + 1) continue;
+      if (mountainFactor(x, z) > 0.25 || heightAt(x, z) > 14) continue;
+      if (!R.chance(0.45)) continue;
+
+      resOccupied.add(`${i},${j}`);
+      resHouses.push({ i, j, x, z });
+    }
+  }
+
+  const resMerged = [];
+  addMergedGrid(g, RES_STEP, RESIDENTIAL_R, LANE1_W, 1, {
+    ringMin: METRO_R + 8,
+    occupiedCells: resOccupied,
+    mergedPlacements: resMerged,
+  });
 
   /* ---- Radial feeders (ensure metro ↔ residential links) -------------- */
   for (let k = 0; k < 8; k++) {
@@ -225,8 +379,6 @@ export function planCity(seed = CITY_SEED) {
         z: CENTER.z + Math.sin(ang) * r,
       });
     }
-    const w = r => (r < METRO_R + 30 ? LANE2_W : LANE1_W);
-    /* Polyline with width based on mid radius — use 2-lane near metro. */
     let prev = null;
     for (const p of pts) {
       const rr = Math.hypot(p.x - CENTER.x, p.z - CENTER.z);
@@ -261,7 +413,6 @@ export function planCity(seed = CITY_SEED) {
   }
   if (coastPts.length > 4) {
     addPolyline(g, coastPts, LANE1_W, 1);
-    /* Close the loop. */
     const a = coastPts[coastPts.length - 1];
     const b = coastPts[0];
     const ia = addNode(g, a.x, a.z, nk(a.x, a.z));
@@ -269,11 +420,7 @@ export function planCity(seed = CITY_SEED) {
     addEdge(g, ia, ib, LANE1_W, 1);
   }
 
-  /* Coast ↔ residential feeders: from the residential ring to the beach.
-     Each one starts on the nearest residential ring node (so it joins the
-     city grid) and runs radially until it reaches the sand band, crossing
-     the coast ring road on the way. Feeders that would climb a mountain
-     flank stop at its foot instead. */
+  /* Coast ↔ residential feeders: from the residential ring to the beach. */
   const ringNodes = g.nodes.filter(n => {
     const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
     return rr >= RESIDENTIAL_R - RES_STEP && rr <= RESIDENTIAL_R;
@@ -281,7 +428,6 @@ export function planCity(seed = CITY_SEED) {
   for (let k = 0; k < 8; k++) {
     const ang = (k / 8) * Math.PI * 2 + 0.2;
     const dirX = Math.cos(ang), dirZ = Math.sin(ang);
-    /* Nearest residential ring node to the feeder direction. */
     let start = null, best = Infinity;
     for (const rn of ringNodes) {
       const d = Math.hypot(
@@ -309,74 +455,47 @@ export function planCity(seed = CITY_SEED) {
     }
   }
 
-  /* ---- Buildings along metro streets ---------------------------------- */
-  const metroN = Math.floor(METRO_R / METRO_STEP);
-  for (let i = -metroN; i <= metroN; i++) {
-    for (let j = -metroN; j <= metroN; j++) {
-      /* Lot centres sit in the open block between roads. */
-      const x = CENTER.x + (i + 0.5) * METRO_STEP;
-      const z = CENTER.z + (j + 0.5) * METRO_STEP;
-      const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
-      if (rr > METRO_R - 12) continue;
-      if (rr < SPAWN_CLEAR * 0.85) continue;
-      if (heightAt(x, z) < WATER_LEVEL + 1) continue;
-      if (!R.chance(0.52)) continue;
-
-      let url, sc, rad, kind;
-      /* Towers taper from a dense downtown core out through the inner ring:
-         ~85% of the core lots, ~50% of the next ring, then mid-rise. */
-      const skyChance = rr < 90 ? 0.85 : rr < 160 ? 0.5 : 0;
-      if (skyChance > 0 && R.chance(skyChance)) {
-        url = R.pick(SKYSCRAPERS);
-        sc = SKY_SCALE * R.f(0.92, 1.12);
-        rad = sc * MODEL_SPAN * 0.42;
-        kind = 'building';
-      } else if (rr < 150 && R.chance(0.75)) {
-        url = R.pick(CITY_BUILDINGS);
-        sc = BUILDING_SCALE * R.f(0.9, 1.1) * buildingBoost(url);
-        rad = sc * MODEL_SPAN * 0.4;
-        kind = 'building';
-      } else {
-        url = R.pick(LOW_CITY);
-        sc = BUILDING_SCALE * R.f(0.85, 1.05) * buildingBoost(url);
-        rad = sc * MODEL_SPAN * 0.38;
-        kind = 'building';
-      }
-      const yaw = R.pick([0, Math.PI / 2, Math.PI, -Math.PI / 2]);
-      /* Sy a bit taller for skyscraper massing. */
-      const sy = kind === 'building' && url.includes('skyscraper')
-        ? sc * R.f(1.15, 1.45)
-        : sc;
-      /* Every metro block is a grey podium at footpath level with the
-         building sitting a few cm clear of its top. */
-      const ground = heightAt(x, z);
-      addInst(placements, url, x, z, yaw, sc, sy, sc, kind,
-        ground + PLATFORM_H + BUILD_UPLIFT);
-      addInst(placements, '', x, z, 0, PLATFORM_SZ, PLATFORM_H, PLATFORM_SZ,
-        'platform', ground);
-      addCollider(colliders, x, z, rad, 'building');
+  /* ---- Metro building placements -------------------------------------- */
+  for (const b of metroBuildings) {
+    const { x, z, rr } = b;
+    let url, sc, rad, kind;
+    const skyChance = rr < 90 ? 0.85 : rr < 160 ? 0.5 : 0;
+    if (skyChance > 0 && R.chance(skyChance)) {
+      url = R.pick(SKYSCRAPERS);
+      sc = SKY_SCALE * R.f(0.92, 1.12);
+      rad = sc * MODEL_SPAN * 0.42;
+      kind = 'building';
+    } else if (rr < 150 && R.chance(0.75)) {
+      url = R.pick(CITY_BUILDINGS);
+      sc = BUILDING_SCALE * R.f(0.9, 1.1) * buildingBoost(url);
+      rad = sc * MODEL_SPAN * 0.4;
+      kind = 'building';
+    } else {
+      url = R.pick(LOW_CITY);
+      sc = BUILDING_SCALE * R.f(0.85, 1.05) * buildingBoost(url);
+      rad = sc * MODEL_SPAN * 0.38;
+      kind = 'building';
     }
+    const yaw = R.pick([0, Math.PI / 2, Math.PI, -Math.PI / 2]);
+    const sy = kind === 'building' && url.includes('skyscraper')
+      ? sc * R.f(1.15, 1.45)
+      : sc;
+    const ground = heightAt(x, z);
+    addInst(placements, url, x, z, yaw, sc, sy, sc, kind,
+      ground + PLATFORM_H + BUILD_UPLIFT);
+    addInst(placements, '', x, z, 0, PLATFORM_SZ, PLATFORM_H, PLATFORM_SZ,
+      'platform', ground);
+    addCollider(colliders, x, z, rad, 'building');
   }
 
-  /* ---- Houses + fences along residential streets ---------------------- */
-  const resN = Math.floor(RESIDENTIAL_R / RES_STEP);
-  for (let i = -resN; i <= resN; i++) {
-    for (let j = -resN; j <= resN; j++) {
-      const x = CENTER.x + (i + 0.5) * RES_STEP;
-      const z = CENTER.z + (j + 0.5) * RES_STEP;
-      const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
-      if (rr < METRO_R + 16 || rr > RESIDENTIAL_R - 12) continue;
-      if (heightAt(x, z) < WATER_LEVEL + 1) continue;
-      /* Keep the mountains clear — no houses on or climbing the peaks. */
-      if (mountainFactor(x, z) > 0.25 || heightAt(x, z) > 14) continue;
-      if (!R.chance(0.45)) continue;
-
-      const sc = HOUSE_SCALE * R.f(0.92, 1.12);
-      const yaw = R.pick([0, Math.PI / 2, Math.PI, -Math.PI / 2]);
-      const url = R.pick(HOUSES);
-      addInst(placements, url, x, z, yaw, sc, sc, sc, 'house');
-      addCollider(colliders, x, z, sc * MODEL_SPAN * 0.38, 'building');
-    }
+  /* ---- Residential house placements ----------------------------------- */
+  for (const h of resHouses) {
+    const { x, z } = h;
+    const sc = HOUSE_SCALE * R.f(0.92, 1.12);
+    const yaw = R.pick([0, Math.PI / 2, Math.PI, -Math.PI / 2]);
+    const url = R.pick(HOUSES);
+    addInst(placements, url, x, z, yaw, sc, sc, sc, 'house');
+    addCollider(colliders, x, z, sc * MODEL_SPAN * 0.38, 'building');
   }
 
   /* Street lights at high-degree junctions (metro), sitting on the footpath

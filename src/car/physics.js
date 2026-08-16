@@ -1537,7 +1537,9 @@ export class Car {
     if (this.airPitch) root.rotateX(this.airPitch);
 
     body.rotation.set(this.pitch, 0, this.roll);
-    body.position.y = (this.bodyLift || 0) + this.squash;
+    /* Ground clearance lift: raises vehicle chassis above wheels while tyres stay pinned to road */
+    const groundLift = this.groundLift !== undefined ? this.groundLift : 0.15;
+    body.position.y = groundLift + (this.bodyLift || 0) + this.squash;
 
     for (let i = 0; i < 4; i++) {
       const w = wheels[i];

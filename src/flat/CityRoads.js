@@ -140,7 +140,7 @@ export function buildRoadLift(graph, placements) {
      zebra inside it are visual only. */
   for (const n of graph.nodes) {
     if ((graph.degree.get(n.id) || 0) < 3) continue;
-    const r = jr.get(n.id) || 0;
+    const r = (jr.get(n.id) || 0) + FOOT_W;
     if (r > 0) put({ ax: n.x - r, az: n.z - r, bx: n.x + r, bz: n.z + r, box: true });
   }
   /* Building podiums: flat at deck height exactly like the footpath, so the
@@ -208,36 +208,23 @@ function buildSlab(x0, z0, x1, z1, width, lanes, openA, openB) {
   /* Left wall faces -(rx,rz); right wall faces +(rx,rz). */
   const lOut = [rz, 0, -rx], rOut = [-rz, 0, rx];
 
-  /* Miter the footpath at junction ends: the outer edge is cut back
-     diagonally (FOOT_W over FOOT_W), so the footpaths of two perpendicular
-     arms meet at the plate corner instead of overlapping. Straight-through
-     (non-junction) ends keep the strip rectangular. */
-  const miterShift = (ux) => {
-    const rampA = openA ? Math.max(0, FOOT_W - (ux - x0)) : 0;
-    const rampB = openB ? Math.max(0, FOOT_W - (x1 - ux)) : 0;
-    return Math.max(rampA, rampB);
-  };
-
+  /* 90-degree perpendicular straight cut across the entire slab */
   for (let i = 0; i < n; i++) {
     const ux = x0 + dx * (i / (n - 1));
     const uz = z0 + dz * (i / (n - 1));
     const g = heightAt(ux, uz);
-    const sh = miterShift(ux);
     for (let s = 0; s < 9; s++) {
       const l = lats[s];
-      const cut = (s === 0 || s === 8) ? sh : 0;
-      dp.push(ux + tx * cut + rx * l, g + DECK, uz + tz * cut + rz * l);
+      dp.push(ux + rx * l, g + DECK, uz + rz * l);
       const c = Math.abs(l) >= half + 0.45 ? foot
         : Math.abs(l) >= half - 0.01 ? kerb : road;
       dc.push(c.r, c.g, c.b);
       dn.push(0, 1, 0);
     }
-    /* Outer wall at the footpath edge — the kerb wall is now buried inside
-       the slab, so the visible side face is the footpath's. Follows the
-       mitered edge at junction ends. */
+    /* Outer wall at the footpath edge */
     for (const sgn of [-1, 1]) {
       const l = sgn * (half + 0.45 + FOOT_W);
-      const px = ux + tx * sh + rx * l, pz = uz + tz * sh + rz * l;
+      const px = ux + rx * l, pz = uz + rz * l;
       wp.push(px, g + DECK, pz);
       wp.push(px, g - BASE, pz);
       wc.push(foot.r, foot.g, foot.b, foot.r, foot.g, foot.b);
@@ -278,6 +265,119 @@ function buildSlab(x0, z0, x1, z1, width, lanes, openA, openB) {
   }
 
   return { road: makeGeo(dp, dc, dn, di), walls: makeGeo(wp, wc, wn, wi), marks };
+}
+
+/**
+ * Concrete footpath border filling the closed side of a T-junction or corner:
+ * Bridges the gap between adjacent perpendicular road arm footpaths with a
+ * continuous raised sidewalk at DECK height, kerb, and outer wall down to BASE.
+ */
+function buildJunctionFootpathBorder(cx, cz, r, dirX, dirZ) {
+  const fw = FOOT_W;
+  const R = r + fw;
+  const tanX = -dirZ, tanZ = dirX;
+  const n = Math.max(5, Math.round((2 * R) / STEP) + 1);
+
+  const dp = [], dc = [], dn = [], di = [];
+  const wp = [], wc = [], wn = [], wi = [];
+  const foot = new THREE.Color(FOOT_COL);
+  const kerb = new THREE.Color(SHOULDER_COL);
+
+  for (let i = 0; i < n; i++) {
+    const u = -R + (2 * R) * (i / (n - 1));
+    const bx = cx + tanX * u;
+    const bz = cz + tanZ * u;
+
+    const p0x = bx + dirX * r, p0z = bz + dirZ * r;
+    const p1x = bx + dirX * (r + 0.45), p1z = bz + dirZ * (r + 0.45);
+    const p2x = bx + dirX * (r + fw), p2z = bz + dirZ * (r + fw);
+
+    const g0 = heightAt(p0x, p0z);
+    const g1 = heightAt(p1x, p1z);
+    const g2 = heightAt(p2x, p2z);
+
+    dp.push(p0x, g0 + DECK, p0z);
+    dc.push(kerb.r, kerb.g, kerb.b);
+    dn.push(0, 1, 0);
+
+    dp.push(p1x, g1 + DECK, p1z);
+    dc.push(kerb.r, kerb.g, kerb.b);
+    dn.push(0, 1, 0);
+
+    dp.push(p2x, g2 + DECK, p2z);
+    dc.push(foot.r, foot.g, foot.b);
+    dn.push(0, 1, 0);
+
+    wp.push(p2x, g2 + DECK, p2z);
+    wp.push(p2x, g2 - BASE, p2z);
+    wc.push(foot.r, foot.g, foot.b, foot.r, foot.g, foot.b);
+    wn.push(dirX, 0, dirZ, dirX, 0, dirZ);
+  }
+
+  for (let i = 0; i < n - 1; i++) {
+    const a0 = i * 3, a1 = a0 + 1, a2 = a0 + 2;
+    const b0 = (i + 1) * 3, b1 = b0 + 1, b2 = b0 + 2;
+
+    di.push(a0, a1, b0, a1, b1, b0);
+    di.push(a1, a2, b1, a2, b2, b1);
+
+    const w0 = i * 2, w1 = (i + 1) * 2;
+    wi.push(w0, w1, w0 + 1, w0 + 1, w1, w1 + 1);
+  }
+
+  return { road: makeGeo(dp, dc, dn, di), walls: makeGeo(wp, wc, wn, wi) };
+}
+
+/**
+ * Corner sidewalk square connecting two perpendicular road arm footpaths
+ * at an intersection corner: FOOT_W x FOOT_W concrete block with kerb.
+ */
+function buildCornerSidewalk(cx, cz, r, sgnX, sgnZ) {
+  const fw = FOOT_W;
+  const R = r + fw;
+  const x0 = cx + sgnX * r, x1 = cx + sgnX * R;
+  const z0 = cz + sgnZ * r, z1 = cz + sgnZ * R;
+
+  const minX = Math.min(x0, x1), maxX = Math.max(x0, x1);
+  const minZ = Math.min(z0, z1), maxZ = Math.max(z0, z1);
+
+  const dp = [], dc = [], dn = [], di = [];
+  const wp = [], wc = [], wn = [], wi = [];
+  const foot = new THREE.Color(FOOT_COL);
+  const kerb = new THREE.Color(SHOULDER_COL);
+
+  // 2x2 grid of vertices on top
+  const xs = [minX, maxX];
+  const zs = [minZ, maxZ];
+  for (let j = 0; j < 2; j++) {
+    for (let i = 0; i < 2; i++) {
+      const px = xs[i], pz = zs[j];
+      const g = heightAt(px, pz);
+      dp.push(px, g + DECK, pz);
+      const isInner = (px === x0 || pz === z0);
+      const c = isInner ? kerb : foot;
+      dc.push(c.r, c.g, c.b);
+      dn.push(0, 1, 0);
+    }
+  }
+  di.push(0, 1, 2, 1, 3, 2);
+
+  // Outer walls on the outer edges (x1 facing sgnX, z1 facing sgnZ)
+  const g00 = heightAt(minX, z1), g01 = heightAt(maxX, z1);
+  wp.push(minX, g00 + DECK, z1, minX, g00 - BASE, z1);
+  wp.push(maxX, g01 + DECK, z1, maxX, g01 - BASE, z1);
+  wc.push(foot.r, foot.g, foot.b, foot.r, foot.g, foot.b, foot.r, foot.g, foot.b, foot.r, foot.g, foot.b);
+  wn.push(0, 0, sgnZ, 0, 0, sgnZ, 0, 0, sgnZ, 0, 0, sgnZ);
+  wi.push(0, 1, 2, 1, 3, 2);
+
+  const g10 = heightAt(x1, minZ), g11 = heightAt(x1, maxZ);
+  wp.push(x1, g10 + DECK, minZ, x1, g10 - BASE, minZ);
+  wp.push(x1, g11 + DECK, maxZ, x1, g11 - BASE, maxZ);
+  wc.push(foot.r, foot.g, foot.b, foot.r, foot.g, foot.b, foot.r, foot.g, foot.b, foot.r, foot.g, foot.b);
+  wn.push(sgnX, 0, 0, sgnX, 0, 0, sgnX, 0, 0, sgnX, 0, 0);
+  wi.push(4, 5, 6, 5, 7, 6);
+
+  return { road: makeGeo(dp, dc, dn, di), walls: makeGeo(wp, wc, wn, wi) };
 }
 
 /* Zebra crossing — painted longitudinal stripes across a road arm approach at a junction.
@@ -379,12 +479,76 @@ export function buildRoadNetworkMesh(graph) {
   const roadParts = [], wallParts = [], markParts = [];
   const jr = junctionRadius(graph);
 
-  /* Road-colored plates fill every open intersection (the grass would
-     otherwise show through). Visual only — no colliders, no kerb rim. */
+  /* Road-colored plates and closed-side footpath borders for every intersection */
   for (const n of graph.nodes) {
     if ((graph.degree.get(n.id) || 0) < 3) continue;
     const r = jr.get(n.id) || 0;
-    if (r > 0) roadParts.push(buildJunctionPlate(n.x, n.z, r));
+    if (r <= 0) continue;
+
+    roadParts.push(buildJunctionPlate(n.x, n.z, r));
+
+    /* Find incident arm directions at node n */
+    const incidentDirs = [];
+    for (const e of graph.edges) {
+      if (e.a === n.id || e.b === n.id) {
+        const otherId = e.a === n.id ? e.b : e.a;
+        const otherNode = byId.get(otherId);
+        if (otherNode) {
+          const dx = otherNode.x - n.x, dz = otherNode.z - n.z;
+          const len = Math.hypot(dx, dz);
+          if (len > 0.5) incidentDirs.push({ x: dx / len, z: dz / len });
+        }
+      }
+    }
+
+    const hasE = incidentDirs.some(d => d.x > 0.7);
+    const hasW = incidentDirs.some(d => d.x < -0.7);
+    const hasS = incidentDirs.some(d => d.z > 0.7);
+    const hasN = incidentDirs.some(d => d.z < -0.7);
+
+    /* Closed side footpath borders */
+    if (!hasE) {
+      const b = buildJunctionFootpathBorder(n.x, n.z, r, 1, 0);
+      if (b.road) roadParts.push(b.road);
+      if (b.walls) wallParts.push(b.walls);
+    }
+    if (!hasW) {
+      const b = buildJunctionFootpathBorder(n.x, n.z, r, -1, 0);
+      if (b.road) roadParts.push(b.road);
+      if (b.walls) wallParts.push(b.walls);
+    }
+    if (!hasS) {
+      const b = buildJunctionFootpathBorder(n.x, n.z, r, 0, 1);
+      if (b.road) roadParts.push(b.road);
+      if (b.walls) wallParts.push(b.walls);
+    }
+    if (!hasN) {
+      const b = buildJunctionFootpathBorder(n.x, n.z, r, 0, -1);
+      if (b.road) roadParts.push(b.road);
+      if (b.walls) wallParts.push(b.walls);
+    }
+
+    /* Corner sidewalk blocks between adjacent perpendicular arms */
+    if (hasE && hasS) {
+      const c = buildCornerSidewalk(n.x, n.z, r, 1, 1);
+      if (c.road) roadParts.push(c.road);
+      if (c.walls) wallParts.push(c.walls);
+    }
+    if (hasE && hasN) {
+      const c = buildCornerSidewalk(n.x, n.z, r, 1, -1);
+      if (c.road) roadParts.push(c.road);
+      if (c.walls) wallParts.push(c.walls);
+    }
+    if (hasW && hasS) {
+      const c = buildCornerSidewalk(n.x, n.z, r, -1, 1);
+      if (c.road) roadParts.push(c.road);
+      if (c.walls) wallParts.push(c.walls);
+    }
+    if (hasW && hasN) {
+      const c = buildCornerSidewalk(n.x, n.z, r, -1, -1);
+      if (c.road) roadParts.push(c.road);
+      if (c.walls) wallParts.push(c.walls);
+    }
   }
 
   for (const e of graph.edges) {

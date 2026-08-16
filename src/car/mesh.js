@@ -238,7 +238,7 @@ export function buildCar(paletteIndex = 0) {
 
     const hub = new THREE.Group();
     hub.position.set(
-      (left ? -1 : 1) * CAR.track * 0.5,
+      (left ? -1 : 1) * CAR.track * 0.44,
       CAR.wheelR,
       front ? -CAR.wheelBase * 0.5 : CAR.wheelBase * 0.5);
     const spin = new THREE.Group();
@@ -314,11 +314,8 @@ export function buildCarFromGLTF(gltf) {
     }
     return n ? s / n : 0;
   })();
-  /* The baked models are narrow-stanced in model units; after scaling they
-     would tuck the tyres far inside the body. TRACK_GAIN widens each model's
-     own gait so the wheels sit a reasonable way apart while still differing
-     from vehicle to vehicle (a race car reads differently from a van). */
-  const TRACK_GAIN = 2.0;
+  /* TRACK_GAIN controls lateral stance width: lowered to 1.25 so wheels sit snugly and flush */
+  const TRACK_GAIN = 1.25;
 
   /* Detach the wheels before scaling the body, so a model that nests its
      wheels under the body node is not scaled twice. */
@@ -380,6 +377,7 @@ export function buildCarFromGLTF(gltf) {
          bottom to land on the ground (rideHeight below the root) the spin
          must sit at −box.min.y − wheelR. This holds whatever the wheel's
          true radius or where its origin sits in the tyre. */
+      rawWheel.rotation.y = Math.PI;
       const box = new THREE.Box3().setFromObject(rawWheel);
       spin.position.y = -box.min.y - CAR.wheelR;
       spin.add(rawWheel);
@@ -406,4 +404,3 @@ export async function loadCarGLB(url = '/assets/vehicle/race.glb') {
   const gltf = await loader.loadAsync(url);
   return buildCarFromGLTF(gltf);
 }
-
