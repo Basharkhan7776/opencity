@@ -11,4 +11,4 @@ Make a mini map of the city and indecate my vehecle , also remove gare number, a
 
 
 
-Map making algo better where path should be smoother and connected roads in race map formation. If we have circle the make a large circle and sprint should accross the map.
+Map making algo better where path should be smoother and connected roads in race map formation. If we have circle the make a large circle and sprint should accross the map straight.

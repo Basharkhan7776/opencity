@@ -938,16 +938,31 @@ class Game {
   }
 }
 
-/* The whole HUD: a speed readout, a gear, a hint line, and a pause plate.
-   Drawn in canvas like the rally's, but with none of its furniture. */
+/* The HUD: real-time mini map radar, crisp digital speed readout, race stats, and pause plate. */
 class Hud {
-  constructor(canvas) {
+  constructor(canvas, graph = null) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.w = 0; this.h = 0; this.dpr = 1;
-    this.speed = 0; this.gear = 1;
+    this.speed = 0;
     this.carName = '';
     this.race = null;
+    this.playerX = 0;
+    this.playerZ = 0;
+    this.playerYaw = 0;
+    this.activeRace = null;
+    this._clock = 0;
+    this.graph = null;
+    this.nodeMap = new Map();
+    if (graph) this.setGraph(graph);
+  }
+
+  setGraph(graph) {
+    this.graph = graph;
+    this.nodeMap.clear();
+    if (graph?.nodes) {
+      for (const n of graph.nodes) this.nodeMap.set(n.id, n);
+    }
   }
 
   resize(w, h, dpr) {
@@ -958,9 +973,13 @@ class Hud {
 
   setCarName(name) { this.carName = name; }
 
-  update(dt, { speed, gear }) {
+  update(dt, { speed = 0, playerX = 0, playerZ = 0, playerYaw = 0, race = null } = {}) {
     this.speed = speed;
-    this.gear = gear;
+    this.playerX = playerX;
+    this.playerZ = playerZ;
+    this.playerYaw = playerYaw;
+    this.activeRace = race;
+    this._clock += dt;
   }
 
   draw(paused = false, menu = null) {
@@ -973,39 +992,322 @@ class Hud {
       return;
     }
 
+    /* 1. Real-time City Mini Map in Bottom-Left */
+    this._drawMinimap(ctx, w, h);
+
+    /* 2. Active Race HUD at Top-Centre */
     if (this.race) this._drawRace(ctx, w, h);
 
-    /* Speed, bottom right. */
+    /* 3. Speed Readout, Bottom-Right (No gear number) */
     const kmh = Math.round(this.speed * 3.6);
     ctx.textAlign = 'right';
     ctx.shadowColor = 'rgba(20,10,14,0.9)';
     ctx.shadowBlur = 10;
-    ctx.font = '700 64px ui-sans-serif, system-ui, sans-serif';
+    ctx.font = '700 58px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = '#f0e6d8';
-    ctx.fillText(String(kmh), w - 28, h - 66);
-    ctx.font = '600 17px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillText(String(kmh), w - 28, h - 50);
+    ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = '#c9b8a5';
-    ctx.fillText('KM/H', w - 28, h - 38);
+    ctx.fillText('KM/H', w - 28, h - 26);
     ctx.shadowBlur = 0;
-    ctx.font = '600 15px ui-sans-serif, system-ui, sans-serif';
-    ctx.fillText('GEAR ' + (this.gear + 1), w - 28, h - 14);
 
-    /* Hint, bottom left. */
-    ctx.textAlign = 'left';
-    ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
-    ctx.fillStyle = 'rgba(240,230,216,0.55)';
-    const hint = this.race
-      ? 'WASD / ARROWS  drive   MOUSE  look   ESC  menu   ENTER  skip countdown'
-      : 'WASD / ARROWS  drive   MOUSE  look   R  reset   ESC  menu   CTRL+SHIFT+C  fly cam';
-    ctx.fillText(hint, 24, h - 20);
-
-    /* Current vehicle, bottom centre. */
+    /* 4. Current Vehicle Name, Bottom-Centre */
     if (this.carName) {
       ctx.textAlign = 'center';
       ctx.font = '600 13px ui-sans-serif, system-ui, sans-serif';
-      ctx.fillStyle = 'rgba(240,230,216,0.75)';
-      ctx.fillText(this.carName, w / 2, h - 20);
+      ctx.fillStyle = 'rgba(240,230,216,0.65)';
+      ctx.fillText(this.carName, w / 2, h - 22);
     }
+  }
+
+  /* ---- Mini Map Radar (Bottom-Left) ---------------------------------- */
+
+  _drawMinimap(ctx, w, h) {
+    const r = 74; // Radar radius in CSS pixels
+    const pad = 24;
+    const cx = pad + r;
+    const cy = h - pad - r;
+
+    ctx.save();
+
+    // 1. Dark frosted circular backdrop with soft shadow
+    ctx.shadowColor = 'rgba(10, 8, 12, 0.85)';
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = 'rgba(18, 14, 18, 0.86)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // 2. Circular clipping for map viewport
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r - 1.5, 0, Math.PI * 2);
+    ctx.clip();
+
+    // 3. Subtle radar range rings & crosshairs
+    ctx.strokeStyle = 'rgba(240, 230, 216, 0.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 0.45, 0, Math.PI * 2);
+    ctx.arc(cx, cy, r * 0.80, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(240, 230, 216, 0.05)';
+    ctx.beginPath();
+    ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy);
+    ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r);
+    ctx.stroke();
+
+    // 4. World-to-Radar coordinate projection (rotating with player vehicle heading)
+    const viewRadius = 180; // World radius visible on radar in meters
+    const scale = (r - 4) / viewRadius; // px per meter
+    const cosY = Math.cos(this.playerYaw);
+    const sinY = Math.sin(this.playerYaw);
+    const px = this.playerX, pz = this.playerZ;
+
+    const toU = (wx, wz) => {
+      const dx = wx - px, dz = wz - pz;
+      const right = -dx * sinY + dz * cosY;
+      return cx + right * scale;
+    };
+    const toV = (wx, wz) => {
+      const dx = wx - px, dz = wz - pz;
+      const fwd = dx * cosY + dz * sinY;
+      return cy - fwd * scale;
+    };
+
+    // 5. Draw City Road Graph
+    if (this.graph && this.graph.edges) {
+      const edges = this.graph.edges;
+      const byId = this.nodeMap;
+      const viewMaxDistSq = (viewRadius * 1.5) ** 2;
+
+      const minorStreets = [];
+      const majorAvenues = [];
+
+      for (let i = 0; i < edges.length; i++) {
+        const e = edges[i];
+        const na = byId.get(e.a), nb = byId.get(e.b);
+        if (!na || !nb) continue;
+        const dxa = na.x - px, dza = na.z - pz;
+        const dxb = nb.x - px, dzb = nb.z - pz;
+        if (dxa * dxa + dza * dza > viewMaxDistSq && dxb * dxb + dzb * dzb > viewMaxDistSq) {
+          continue;
+        }
+        if (e.width >= 12) majorAvenues.push(e);
+        else minorStreets.push(e);
+      }
+
+      // Draw regular streets
+      if (minorStreets.length) {
+        ctx.strokeStyle = 'rgba(215, 210, 202, 0.40)';
+        ctx.lineWidth = 3.0;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (let i = 0; i < minorStreets.length; i++) {
+          const e = minorStreets[i];
+          const na = byId.get(e.a), nb = byId.get(e.b);
+          ctx.moveTo(toU(na.x, na.z), toV(na.x, na.z));
+          ctx.lineTo(toU(nb.x, nb.z), toV(nb.x, nb.z));
+        }
+        ctx.stroke();
+      }
+
+      // Draw major 2-lane avenues
+      if (majorAvenues.length) {
+        ctx.strokeStyle = 'rgba(255, 245, 230, 0.85)';
+        ctx.lineWidth = 4.8;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (let i = 0; i < majorAvenues.length; i++) {
+          const e = majorAvenues[i];
+          const na = byId.get(e.a), nb = byId.get(e.b);
+          ctx.moveTo(toU(na.x, na.z), toV(na.x, na.z));
+          ctx.lineTo(toU(nb.x, nb.z), toV(nb.x, nb.z));
+        }
+        ctx.stroke();
+      }
+    }
+
+    // 6. Draw Race Route, All Checkpoints, and Competitor Blips if in a Race
+    if (this.activeRace && this.activeRace.route) {
+      const route = this.activeRace.route;
+      const pts = route.points || [];
+      const cps = route.checkpoints || [];
+      const curCpIdx = this.activeRace.playerSlot?.cp || 0;
+      const n = cps.length;
+
+      // 6a. Draw Race Route Polyline
+      if (pts.length > 1) {
+        ctx.strokeStyle = 'rgba(255, 184, 0, 0.45)';
+        ctx.lineWidth = 3.2;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        for (let i = 0; i < pts.length; i++) {
+          const p = pts[i];
+          const u = toU(p.x, p.z), v = toV(p.x, p.z);
+          if (i === 0) ctx.moveTo(u, v);
+          else ctx.lineTo(u, v);
+        }
+        if (route.loop) ctx.closePath();
+        ctx.stroke();
+      }
+
+      // 6b. Draw Checkpoints along the Route (Active Checkpoint prominently featured)
+      for (let i = 0; i < cps.length; i++) {
+        const cp = cps[i];
+        let cu = toU(cp.x, cp.z);
+        let cv = toV(cp.x, cp.z);
+        const dist = Math.hypot(cu - cx, cv - cy);
+        const isLive = n > 0 && (i === curCpIdx % n);
+        const isNext = n > 0 && (i === (curCpIdx + 1) % n);
+
+        if (isLive) {
+          if (dist > r - 9) {
+            // Off-radar: draw high-visibility pointing directional beacon on the perimeter ring
+            const angle = Math.atan2(cv - cy, cu - cx);
+            cu = cx + Math.cos(angle) * (r - 9);
+            cv = cy + Math.sin(angle) * (r - 9);
+
+            ctx.save();
+            ctx.translate(cu, cv);
+            ctx.rotate(angle);
+            ctx.shadowColor = 'rgba(255, 184, 0, 0.95)';
+            ctx.shadowBlur = 8;
+            ctx.fillStyle = '#ffd54a';
+            ctx.strokeStyle = '#140c0e';
+            ctx.lineWidth = 1.8;
+            ctx.beginPath();
+            ctx.moveTo(7, 0);
+            ctx.lineTo(-5, -5.5);
+            ctx.lineTo(-2, 0);
+            ctx.lineTo(-5, 5.5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.stroke();
+            ctx.restore();
+          } else {
+            // On-radar active checkpoint: vibrant pulsing halo + glowing golden bullseye
+            const pulsePhase = (this._clock * 3.5) % 1;
+            const haloRadius = 6.5 + pulsePhase * 12;
+            const haloAlpha = (1 - pulsePhase) * 0.75;
+            ctx.strokeStyle = `rgba(255, 213, 74, ${haloAlpha})`;
+            ctx.lineWidth = 2.0;
+            ctx.beginPath();
+            ctx.arc(cu, cv, haloRadius, 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.shadowColor = 'rgba(255, 184, 0, 0.95)';
+            ctx.shadowBlur = 10;
+            ctx.fillStyle = '#ffb800';
+            ctx.beginPath();
+            ctx.arc(cu, cv, 6.0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2.2;
+            ctx.stroke();
+
+            // Inner white bullseye dot
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(cu, cv, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        } else if (dist <= r - 2) {
+          if (isNext) {
+            // Next upcoming checkpoint
+            ctx.fillStyle = '#f5b025';
+            ctx.strokeStyle = '#140c0e';
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.arc(cu, cv, 4.0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          } else {
+            // Other checkpoints on the route
+            ctx.fillStyle = 'rgba(255, 184, 0, 0.70)';
+            ctx.strokeStyle = '#140c0e';
+            ctx.lineWidth = 1.0;
+            ctx.beginPath();
+            ctx.arc(cu, cv, 2.8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          }
+        }
+      }
+
+      // 6c. Draw Rival Vehicles
+      const rivals = this.activeRace.entries || [];
+      for (let i = 0; i < rivals.length; i++) {
+        const rv = rivals[i];
+        if (rv.isPlayer || !rv.car?.pos) continue;
+        const ru = toU(rv.car.pos.x, rv.car.pos.z);
+        const rv_v = toV(rv.car.pos.x, rv.car.pos.z);
+        if (Math.hypot(ru - cx, rv_v - cy) < r - 3) {
+          ctx.fillStyle = '#ff4242';
+          ctx.strokeStyle = '#140c0e';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.arc(ru, rv_v, 3.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+    }
+
+    ctx.restore(); // End clipping
+
+    // 7. Draw Player Vehicle Arrow at Radar Center (Pointing UP)
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.shadowColor = 'rgba(255, 184, 0, 0.85)';
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = '#ffb800';
+    ctx.strokeStyle = '#120d0b';
+    ctx.lineWidth = 2.0;
+    ctx.beginPath();
+    ctx.moveTo(0, -9);
+    ctx.lineTo(6, 7);
+    ctx.lineTo(0, 3.5);
+    ctx.lineTo(-6, 7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.stroke();
+
+    // Sharp white inner core
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(0, -6.5);
+    ctx.lineTo(3.2, 4);
+    ctx.lineTo(0, 2);
+    ctx.lineTo(-3.2, 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // 8. Radar Outer Border Rim & North Compass Indicator
+    ctx.strokeStyle = 'rgba(240, 230, 216, 0.35)';
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Compass North Indicator (World -Z)
+    const nAngle = Math.atan2(-Math.sin(this.playerYaw), -Math.cos(this.playerYaw));
+    const nx = cx + Math.cos(nAngle) * (r - 7);
+    const ny = cy - Math.sin(nAngle) * (r - 7);
+    ctx.fillStyle = '#ff4d4d';
+    ctx.font = '700 9px ui-sans-serif, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('N', nx, ny);
+
+    ctx.restore();
   }
 
   /* ---- the pause menu ------------------------------------------------ */
