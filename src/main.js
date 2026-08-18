@@ -52,6 +52,23 @@ const TIERS = {
   high: { dpr: 1.0, shadow: 4096, shadowDist: 46 },
 };
 
+/* ESC → SETTINGS. Resolution is a fraction of the current display so 1.0X
+   is unchanged and 0.7X draws 49% of the pixels. */
+const GFX_RES = [1, 0.9, 0.8, 0.7, 0.6, 0.5];
+const GFX_RES_LABELS = ['1.0X', '0.9X', '0.8X', '0.7X', '0.6X', '0.5X'];
+const GFX_DIST = [250, 350, 500, 750, 1000];
+const GFX_DIST_LABELS = ['250 M', '350 M', '500 M', '750 M', '1 KM'];
+const GFX_PEDS = [0, 5, 10, 15, 20];
+const GFX_SHADOWS = ['off', 'low', 'medium', 'high'];
+const GFX_SHADOW_LABELS = ['OFF', 'LOW', 'MEDIUM', 'HIGH'];
+const GFX_SHADOW = {
+  off: { size: 0, dist: 0 },
+  low: { size: 1024, dist: 24 },
+  medium: { size: 2048, dist: 38 },
+  high: { size: 4096, dist: 46 },
+};
+const GFX_KEY = 'opencity.gfx';
+
 /* Sphere of visibility, centred on the player's vehicle: world chunks whose
    bounding sphere intersects this radius render; beyond it everything is
    fogged out and not drawn. The island is ~2 km across, so 1 km keeps the
@@ -137,6 +154,7 @@ class Game {
        everything past FOG_NEAR melts toward the sky colour and is gone by the
        camera far plane, so nothing pops at the clip. The colour matches the
        background so the horizon is seamless. */
+    this.viewRadius = VIEW_RADIUS;
     this.scene.fog = new THREE.Fog(0x8cc8e8, FOG_NEAR, FOG_FAR);
 
     this.camera = new THREE.PerspectiveCamera(62, 1, 0.4, CAM_FAR);
@@ -237,6 +255,8 @@ class Game {
       difficulty: 1,
     };
     this.menu = null;
+    this.gfx = this._loadGfx();
+    this._applyGfx({ persist: false });
 
     this.resize();
     addEventListener('resize', () => this.resize());
@@ -301,6 +321,9 @@ class Game {
 
   resize() {
     const w = innerWidth, h = innerHeight;
+    const scale = GFX_RES[this.gfx?.resIdx ?? 0];
+    const cap = TIERS[this.tier].dpr;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, cap) * scale);
     this.renderer.setSize(w, h, false);
     this.pipeline.setSize(w, h);
     this.hud.resize(w, h, devicePixelRatio);
@@ -475,8 +498,8 @@ class Game {
      or resumes from the top view. */
   _menuItems() {
     return this.race
-      ? ['RESUME', 'LEAVE RACE']
-      : ['RESUME', 'RACE', 'CHANGE VEHICLE', 'RESTART'];
+      ? ['RESUME', 'SETTINGS', 'LEAVE RACE']
+      : ['RESUME', 'RACE', 'CHANGE VEHICLE', 'SETTINGS', 'RESTART'];
   }
 
   _menuStep() {
@@ -486,12 +509,16 @@ class Game {
     m.liveRace = !!this.race;
     m.setup = this.raceSetup;
     if (this._switching) return;
+    m.gfx = this.gfx;
     if (i.pausePressed) {
-      if (m.view === 'vehicles' || m.view === 'race') { m.view = 'main'; m.index = 0; return; }
+      if (m.view === 'vehicles' || m.view === 'race' || m.view === 'settings') {
+        m.view = 'main'; m.index = 0; return;
+      }
       this.togglePause();
       return;
     }
     if (m.view === 'race') return this._raceMenuStep();
+    if (m.view === 'settings') return this._settingsMenuStep();
     if (m.view === 'main') {
       const items = this._menuItems();
       const n = items.length;
@@ -504,7 +531,8 @@ class Game {
         else if (pick === 'CHANGE VEHICLE') {
           m.view = 'vehicles';
           m.index = this.vehicleIndex;
-        } else if (pick === 'RESTART') {
+        } else if (pick === 'SETTINGS') { m.view = 'settings'; m.index = 0; }
+        else if (pick === 'RESTART') {
           this.respawn();
           this.togglePause();
         } else if (pick === 'LEAVE RACE') {
@@ -540,6 +568,113 @@ class Game {
       }
     } else if (i.confirmPressed && m.index === 4) {
       this._startRace();
+    }
+  }
+
+  _settingsMenuStep() {
+    const m = this.menu;
+    const i = this.input;
+    const g = this.gfx;
+    const rows = 4;
+    if (i.menuUpPressed) m.index = (m.index + rows - 1) % rows;
+    else if (i.menuDownPressed) m.index = (m.index + 1) % rows;
+    else if (i.menuLeftPressed || i.menuRightPressed) {
+      const dir = i.menuRightPressed ? 1 : -1;
+      if (m.index === 0) {
+        g.resIdx = (g.resIdx + dir + GFX_RES.length) % GFX_RES.length;
+      } else if (m.index === 1) {
+        g.distIdx = (g.distIdx + dir + GFX_DIST.length) % GFX_DIST.length;
+      } else if (m.index === 2) {
+        g.pedIdx = (g.pedIdx + dir + GFX_PEDS.length) % GFX_PEDS.length;
+      } else if (m.index === 3) {
+        g.shadowIdx = (g.shadowIdx + dir + GFX_SHADOWS.length) % GFX_SHADOWS.length;
+      }
+      this._applyGfx({ preview: true });
+    }
+  }
+
+  _defaultGfx() {
+    return {
+      resIdx: 0,
+      distIdx: GFX_DIST.indexOf(VIEW_RADIUS) >= 0 ? GFX_DIST.indexOf(VIEW_RADIUS) : 2,
+      pedIdx: GFX_PEDS.indexOf(10) >= 0 ? GFX_PEDS.indexOf(10) : 2,
+      shadowIdx: this.tier === 'low' ? 1 : this.tier === 'medium' ? 2 : 3,
+    };
+  }
+
+  /** Use a stored index when it is in range; otherwise the default. */
+  _gfxIdx(value, count, fallback) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    const i = n | 0;
+    return i >= 0 && i < count ? i : fallback;
+  }
+
+  /**
+   * Local settings first, defaults only for missing or invalid fields.
+   * Corrupt or blocked storage falls back to a full default object.
+   */
+  _loadGfx() {
+    const defaults = this._defaultGfx();
+    try {
+      const raw = localStorage.getItem(GFX_KEY);
+      if (raw == null || raw === '') return defaults;
+      const saved = JSON.parse(raw);
+      if (!saved || typeof saved !== 'object') return defaults;
+      return {
+        resIdx: this._gfxIdx(saved.resIdx, GFX_RES.length, defaults.resIdx),
+        distIdx: this._gfxIdx(saved.distIdx, GFX_DIST.length, defaults.distIdx),
+        pedIdx: this._gfxIdx(saved.pedIdx, GFX_PEDS.length, defaults.pedIdx),
+        shadowIdx: this._gfxIdx(saved.shadowIdx, GFX_SHADOWS.length, defaults.shadowIdx),
+      };
+    } catch {
+      return defaults;
+    }
+  }
+
+  _saveGfx() {
+    try { localStorage.setItem(GFX_KEY, JSON.stringify(this.gfx)); } catch { /* private mode */ }
+  }
+
+  _applyGfx({ persist = true, preview = false } = {}) {
+    const g = this.gfx;
+    this.resize();
+
+    const dist = GFX_DIST[g.distIdx];
+    this.viewRadius = dist;
+    if (this.scene.fog) {
+      this.scene.fog.near = dist * 0.6;
+      this.scene.fog.far = dist;
+    }
+    this.camera.far = dist + 100;
+    this.camera.updateProjectionMatrix();
+    this.pedestrians?.setRadius(dist);
+    this.pedestrians?.setCount(GFX_PEDS[g.pedIdx]);
+
+    const spec = GFX_SHADOW[GFX_SHADOWS[g.shadowIdx]];
+    const shadowsOn = spec.size > 0;
+    this.renderer.shadowMap.enabled = shadowsOn;
+    if (this.sun) {
+      this.sun.castShadow = shadowsOn;
+      if (shadowsOn) {
+        const size = Math.min(spec.size, this.renderer.capabilities.maxTextureSize);
+        if (this.sun.shadow.mapSize.x !== size) {
+          this.sun.shadow.mapSize.set(size, size);
+          this.sun.shadow.map?.dispose();
+          this.sun.shadow.map = null;
+        }
+        const cam = this.sun.shadow.camera;
+        cam.left = -spec.dist; cam.right = spec.dist;
+        cam.top = spec.dist; cam.bottom = -spec.dist;
+        cam.updateProjectionMatrix();
+      }
+    }
+
+    if (persist) this._saveGfx();
+    if (preview && this.running && this.pipeline && !this.paused) this.pipeline.render();
+    if (preview && this.running && this.pipeline && this.paused) {
+      this._cullWorldChunks();
+      this.pipeline.render();
     }
   }
 
@@ -828,6 +963,8 @@ class Game {
     await Promise.all(tasks);
     this._setLoadProgress(1);
     this._scanWorldChunks();
+    /* Ped pool exists now — re-apply the saved (or default) counts/radii. */
+    this._applyGfx({ persist: false });
     document.getElementById('boot')?.classList.add('gone');
   }
 
@@ -859,7 +996,7 @@ class Game {
     for (let i = 0; i < chunks.length; i++) {
       const c = chunks[i];
       const dx = c.x - px, dz = c.z - pz;
-      const lim = VIEW_RADIUS + c.r;
+      const lim = this.viewRadius + c.r;
       c.object.visible = dx * dx + dz * dz <= lim * lim;
     }
   }
@@ -1322,6 +1459,7 @@ class Hud {
 
     if (menu?.view === 'vehicles') return this._drawVehicleList(menu);
     if (menu?.view === 'race') return this._drawRaceSetup(menu);
+    if (menu?.view === 'settings') return this._drawSettings(menu);
 
     ctx.font = '700 34px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = '#f0e6d8';
@@ -1334,8 +1472,8 @@ class Hud {
     ctx.fillText(this.carName || '', w / 2, h / 2 - 60);
 
     const items = menu?.liveRace
-      ? ['RESUME', 'LEAVE RACE']
-      : ['RESUME', 'RACE', 'CHANGE VEHICLE', 'RESTART'];
+      ? ['RESUME', 'SETTINGS', 'LEAVE RACE']
+      : ['RESUME', 'RACE', 'CHANGE VEHICLE', 'SETTINGS', 'RESTART'];
     ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
     for (let k = 0; k < items.length; k++) {
       const y = h / 2 + k * 34;
@@ -1390,6 +1528,43 @@ class Hud {
     ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(240,230,216,0.55)';
     ctx.fillText('UP / DOWN  row    LEFT / RIGHT  value    ENTER  start    ESC  back',
+      w / 2, h / 2 + 140);
+  }
+
+  _drawSettings(menu) {
+    const { ctx, w, h } = this;
+    const g = menu.gfx || { resIdx: 0, distIdx: 2, pedIdx: 2, shadowIdx: 3 };
+    const rows = [
+      ['RESOLUTION', GFX_RES_LABELS[g.resIdx] || '1.0X'],
+      ['DRAW DISTANCE', GFX_DIST_LABELS[g.distIdx] || '500 M'],
+      ['PEDESTRIANS', String(GFX_PEDS[g.pedIdx] ?? 10)],
+      ['SHADOWS', GFX_SHADOW_LABELS[g.shadowIdx] || 'HIGH'],
+    ];
+
+    ctx.font = '700 28px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#f0e6d8';
+    ctx.shadowColor = 'rgba(20,10,14,0.9)';
+    ctx.shadowBlur = 10;
+    ctx.fillText('SETTINGS', w / 2, h / 2 - 130);
+    ctx.shadowBlur = 0;
+
+    ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
+    for (let k = 0; k < rows.length; k++) {
+      const y = h / 2 - 70 + k * 36;
+      const sel = k === menu.index;
+      ctx.fillStyle = sel ? '#ffd54a' : 'rgba(201,184,165,0.8)';
+      if (sel) ctx.fillText('▶', w / 2 - 220, y);
+      ctx.textAlign = 'left';
+      ctx.fillText(rows[k][0], w / 2 - 190, y);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = sel ? '#f0e6d8' : 'rgba(240,230,216,0.75)';
+      ctx.fillText('<  ' + rows[k][1] + '  >', w / 2 + 220, y);
+      ctx.textAlign = 'center';
+    }
+
+    ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(240,230,216,0.55)';
+    ctx.fillText('UP / DOWN  row    LEFT / RIGHT  change    ESC  back',
       w / 2, h / 2 + 140);
   }
 

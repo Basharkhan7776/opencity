@@ -116,8 +116,28 @@ export class Pedestrians {
     this.idles = [];          // idle clip per model (straight upright standing)
     this.peds = [];
     this.enabled = true;
+    this.limit = PED_COUNT;
+    this.radius = PED_RADIUS;
+    this.spawnMax = PED_SPAWN_MAX;
 
     this._indexGraph();
+  }
+
+  /** How many walkers may be live. Grows the pool once models are loaded. */
+  setCount(n) {
+    this.limit = Math.max(0, n | 0);
+    if (!this.ready) return;
+    while (this.peds.length < this.limit) this._addPed(this.peds.length);
+    for (let i = this.limit; i < this.peds.length; i++) {
+      this.peds[i].active = false;
+      if (this.peds[i].anchor) this.peds[i].anchor.visible = false;
+    }
+  }
+
+  /** Visibility sphere, metres. Spawn annulus stays inside it. */
+  setRadius(r) {
+    this.radius = Math.max(80, r);
+    this.spawnMax = Math.max(this.radius - 40, PED_SPAWN_MIN + 20);
   }
 
   /**
@@ -234,40 +254,42 @@ export class Pedestrians {
     }));
 
     if (!this.models.length) { this.disposed = true; return; }
-    /* The pool. Ten rigs, each with its own mixer (a mixer can only drive
-       one skeleton), all hidden until their first spawn. */
-    for (let i = 0; i < PED_COUNT; i++) {
-      const model = cloneScene(this.models[i % this.models.length]);
-      const anchor = new THREE.Group();
-      anchor.add(model);
-      anchor.visible = false;
-      this.root.add(anchor);
-
-      const walkClip = this.walks[i % this.walks.length];
-      const idleClip = this.idles[i % this.idles.length];
-      const mixer = new THREE.AnimationMixer(model);
-
-      const walkAction = walkClip ? mixer.clipAction(walkClip) : null;
-      const idleAction = idleClip ? mixer.clipAction(idleClip) : null;
-
-      this.peds.push({
-        anchor,
-        mixer,
-        walkAction,
-        idleAction,
-        walkClip,
-        idleClip,
-        active: false,
-        isIdle: false,
-        edge: null,
-        t: 0,
-        side: 1,
-        foot: 0,
-        dir: 1,
-        speed: 1,
-      });
-    }
+    const want = Math.max(this.limit, PED_COUNT);
+    for (let i = 0; i < want; i++) this._addPed(i);
     this.ready = true;
+    this.setCount(this.limit);
+  }
+
+  _addPed(i) {
+    const model = cloneScene(this.models[i % this.models.length]);
+    const anchor = new THREE.Group();
+    anchor.add(model);
+    anchor.visible = false;
+    this.root.add(anchor);
+
+    const walkClip = this.walks[i % this.walks.length];
+    const idleClip = this.idles[i % this.idles.length];
+    const mixer = new THREE.AnimationMixer(model);
+
+    const walkAction = walkClip ? mixer.clipAction(walkClip) : null;
+    const idleAction = idleClip ? mixer.clipAction(idleClip) : null;
+
+    this.peds.push({
+      anchor,
+      mixer,
+      walkAction,
+      idleAction,
+      walkClip,
+      idleClip,
+      active: false,
+      isIdle: false,
+      edge: null,
+      t: 0,
+      side: 1,
+      foot: 0,
+      dir: 1,
+      speed: 1,
+    });
   }
 
   /**
@@ -282,7 +304,7 @@ export class Pedestrians {
     if (!this._edges.length) return false;
     for (let tries = 0; tries < 10; tries++) {
       const ang = Math.random() * Math.PI * 2;
-      const d = PED_SPAWN_MIN + Math.random() * (PED_SPAWN_MAX - PED_SPAWN_MIN);
+      const d = PED_SPAWN_MIN + Math.random() * (this.spawnMax - PED_SPAWN_MIN);
       const edge = this._closestEdge(px + Math.cos(ang) * d, pz + Math.sin(ang) * d);
       if (!edge) continue;
       ped.edge = edge;
@@ -364,14 +386,19 @@ export class Pedestrians {
   update(dt, px, pz) {
     if (!this.ready || this.disposed || this.enabled === false) return;
     let respawns = 0;
-    for (const ped of this.peds) {
+    for (let i = 0; i < this.peds.length; i++) {
+      const ped = this.peds[i];
+      if (i >= this.limit) {
+        if (ped.anchor) ped.anchor.visible = false;
+        continue;
+      }
       if (ped.mixer) ped.mixer.update(dt);
 
       if (ped.active) {
         this._stepPed(ped, dt);
         this._footPathPoint(ped, ped.anchor.position);
         const dx = ped.anchor.position.x - px, dz = ped.anchor.position.z - pz;
-        if (dx * dx + dz * dz > PED_RADIUS * PED_RADIUS) ped.active = false;
+        if (dx * dx + dz * dz > this.radius * this.radius) ped.active = false;
       } else if (respawns < 2 && this._spawn(ped, px, pz)) {
         respawns++;
       }
