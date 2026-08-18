@@ -13,6 +13,7 @@ import * as THREE from 'three';
 import { FlatTrack, ROAD_WIDTH, INTER_X, WATER_LEVEL } from './flat/FlatTrack.js';
 import { buildFlatWorld } from './flat/FlatWorld.js';
 import { Pedestrians, PED_RADIUS } from './flat/Pedestrians.js';
+import { Traffic, TRAFFIC_COUNT } from './flat/Traffic.js';
 import { loadCarGLB } from './car/mesh.js';
 import { Car, MAX_RPM, steerLockAt } from './car/physics.js';
 import { ChaseCamera } from './car/camera.js';
@@ -59,6 +60,7 @@ const GFX_RES_LABELS = ['1.0X', '0.9X', '0.8X', '0.7X', '0.6X', '0.5X'];
 const GFX_DIST = [250, 350, 500, 750, 1000];
 const GFX_DIST_LABELS = ['250 M', '350 M', '500 M', '750 M', '1 KM'];
 const GFX_PEDS = [0, 5, 10, 15, 20];
+const GFX_TRAFFIC = [0, 3, 5, 8, 10];
 const GFX_SHADOWS = ['off', 'low', 'medium', 'high'];
 const GFX_SHADOW_LABELS = ['OFF', 'LOW', 'MEDIUM', 'HIGH'];
 const GFX_SHADOW = {
@@ -179,6 +181,15 @@ class Game {
     /* Trackside pedestrians — ten characters walking the footpaths inside
        the render sphere. Scene-only (no colliders), so cars pass through. */
     this.pedestrians = new Pedestrians(this.scene, world.city?.graph);
+
+    /* Ambient traffic — civilian/commercial vehicles running on the roads. */
+    this.traffic = new Traffic(
+      this.scene,
+      this.track,
+      world.city?.graph,
+      VEHICLES,
+      idx => this._loadRivalView(idx)
+    );
 
     this.buildCars();
     /* Sun follows the car; aim it at the island centre for the first frame. */
@@ -448,8 +459,9 @@ class Game {
       race: this.race,
     });
 
-    if (this.ambientEnabled && this.pedestrians) {
-      this.pedestrians.update(dt, p.pos.x, p.pos.z);
+    if (this.ambientEnabled) {
+      if (this.pedestrians) this.pedestrians.update(dt, p.pos.x, p.pos.z);
+      if (this.traffic) this.traffic.update(dt, p, this.pedestrians);
     }
   }
 
@@ -575,7 +587,7 @@ class Game {
     const m = this.menu;
     const i = this.input;
     const g = this.gfx;
-    const rows = 4;
+    const rows = 5;
     if (i.menuUpPressed) m.index = (m.index + rows - 1) % rows;
     else if (i.menuDownPressed) m.index = (m.index + 1) % rows;
     else if (i.menuLeftPressed || i.menuRightPressed) {
@@ -587,6 +599,8 @@ class Game {
       } else if (m.index === 2) {
         g.pedIdx = (g.pedIdx + dir + GFX_PEDS.length) % GFX_PEDS.length;
       } else if (m.index === 3) {
+        g.trafficIdx = (g.trafficIdx + dir + GFX_TRAFFIC.length) % GFX_TRAFFIC.length;
+      } else if (m.index === 4) {
         g.shadowIdx = (g.shadowIdx + dir + GFX_SHADOWS.length) % GFX_SHADOWS.length;
       }
       this._applyGfx({ preview: true });
@@ -598,6 +612,7 @@ class Game {
       resIdx: 0,
       distIdx: GFX_DIST.indexOf(VIEW_RADIUS) >= 0 ? GFX_DIST.indexOf(VIEW_RADIUS) : 2,
       pedIdx: GFX_PEDS.indexOf(10) >= 0 ? GFX_PEDS.indexOf(10) : 2,
+      trafficIdx: GFX_TRAFFIC.indexOf(5) >= 0 ? GFX_TRAFFIC.indexOf(5) : 2,
       shadowIdx: this.tier === 'low' ? 1 : this.tier === 'medium' ? 2 : 3,
     };
   }
@@ -625,6 +640,7 @@ class Game {
         resIdx: this._gfxIdx(saved.resIdx, GFX_RES.length, defaults.resIdx),
         distIdx: this._gfxIdx(saved.distIdx, GFX_DIST.length, defaults.distIdx),
         pedIdx: this._gfxIdx(saved.pedIdx, GFX_PEDS.length, defaults.pedIdx),
+        trafficIdx: this._gfxIdx(saved.trafficIdx, GFX_TRAFFIC.length, defaults.trafficIdx),
         shadowIdx: this._gfxIdx(saved.shadowIdx, GFX_SHADOWS.length, defaults.shadowIdx),
       };
     } catch {
@@ -650,6 +666,8 @@ class Game {
     this.camera.updateProjectionMatrix();
     this.pedestrians?.setRadius(dist);
     this.pedestrians?.setCount(GFX_PEDS[g.pedIdx]);
+    this.traffic?.setRadius(dist);
+    this.traffic?.setCount(GFX_TRAFFIC[g.trafficIdx]);
 
     const spec = GFX_SHADOW[GFX_SHADOWS[g.shadowIdx]];
     const shadowsOn = spec.size > 0;
@@ -681,6 +699,7 @@ class Game {
   setAmbient(on) {
     this.ambientEnabled = !!on;
     this.pedestrians?.setEnabled(this.ambientEnabled);
+    this.traffic?.setEnabled(this.ambientEnabled);
   }
 
   async _startRace() {
@@ -945,8 +964,8 @@ class Game {
     if (this._assetsLoading) return;
     this._assetsLoading = true;
     const w = this.world;
-    let a = 0, b = 0, c = 0;
-    const bump = () => this._setLoadProgress((a + b + c) / 3);
+    let a = 0, b = 0, c = 0, d = 0;
+    const bump = () => this._setLoadProgress((a + b + c + d) / 4);
     const tasks = [];
     if (w.loadCity) {
       tasks.push(w.loadCity({ onProgress: f => { a = f; bump(); } })
@@ -959,11 +978,14 @@ class Game {
     tasks.push(this.pedestrians.load()
       .then(() => { c = 1; bump(); })
       .catch(err => console.warn('pedestrians', err)));
+    tasks.push(this.traffic.load()
+      .then(() => { d = 1; bump(); })
+      .catch(err => console.warn('traffic', err)));
     bump();
     await Promise.all(tasks);
     this._setLoadProgress(1);
     this._scanWorldChunks();
-    /* Ped pool exists now — re-apply the saved (or default) counts/radii. */
+    /* Ped & traffic pools exist now — re-apply the saved (or default) counts/radii. */
     this._applyGfx({ persist: false });
     document.getElementById('boot')?.classList.add('gone');
   }
@@ -1533,11 +1555,12 @@ class Hud {
 
   _drawSettings(menu) {
     const { ctx, w, h } = this;
-    const g = menu.gfx || { resIdx: 0, distIdx: 2, pedIdx: 2, shadowIdx: 3 };
+    const g = menu.gfx || { resIdx: 0, distIdx: 2, pedIdx: 2, trafficIdx: 2, shadowIdx: 3 };
     const rows = [
       ['RESOLUTION', GFX_RES_LABELS[g.resIdx] || '1.0X'],
       ['DRAW DISTANCE', GFX_DIST_LABELS[g.distIdx] || '500 M'],
       ['PEDESTRIANS', String(GFX_PEDS[g.pedIdx] ?? 10)],
+      ['TRAFFIC CARS', String(GFX_TRAFFIC[g.trafficIdx] ?? 5)],
       ['SHADOWS', GFX_SHADOW_LABELS[g.shadowIdx] || 'HIGH'],
     ];
 
@@ -1545,12 +1568,12 @@ class Hud {
     ctx.fillStyle = '#f0e6d8';
     ctx.shadowColor = 'rgba(20,10,14,0.9)';
     ctx.shadowBlur = 10;
-    ctx.fillText('SETTINGS', w / 2, h / 2 - 130);
+    ctx.fillText('SETTINGS', w / 2, h / 2 - 135);
     ctx.shadowBlur = 0;
 
     ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
     for (let k = 0; k < rows.length; k++) {
-      const y = h / 2 - 70 + k * 36;
+      const y = h / 2 - 80 + k * 35;
       const sel = k === menu.index;
       ctx.fillStyle = sel ? '#ffd54a' : 'rgba(201,184,165,0.8)';
       if (sel) ctx.fillText('▶', w / 2 - 220, y);
@@ -1565,7 +1588,7 @@ class Hud {
     ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(240,230,216,0.55)';
     ctx.fillText('UP / DOWN  row    LEFT / RIGHT  change    ESC  back',
-      w / 2, h / 2 + 140);
+      w / 2, h / 2 + 135);
   }
 
   _drawRace(ctx, w, h) {
