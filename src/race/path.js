@@ -1,23 +1,20 @@
-/* Build a race route on the city road graph.
- *
- * Sprint (loop=false): an open walk of about `length` metres.
- * Circuit (loop=true): a walk that returns to its start.
- * Stays inside the built city — no coast hops off the map.
- * Checkpoints are sampled every ~80 m along the densified centreline.
+/* Build race routes on the city road graph:
+ * - Straight Sprints (loop=false): high-speed corridors running straight across the map.
+ * - Large Circle Circuits (loop=true): wide, flowing grand-prix circular ring loops.
+ * - Smooth filleted racing line geometry through all turns.
  */
 import { rng } from '../core/rng.js';
+import { clamp } from '../core/util.js';
 import {
-  CENTER, RESIDENTIAL_R, WATER_LEVEL, heightAt,
+  CENTER, RESIDENTIAL_R, METRO_R, ISLAND_R, WATER_LEVEL, heightAt,
 } from '../flat/Island.js';
 
-const SAMPLE = 6;
-const CP_SPACING = 80;
-const MAX_TRIES = 24;
-const CITY_R = RESIDENTIAL_R + 28;
+const SAMPLE = 4.0;
+const CP_SPACING = 75;
 
 function onCityRoad(x, z) {
   if (heightAt(x, z) < WATER_LEVEL + 0.6) return false;
-  return Math.hypot(x - CENTER.x, z - CENTER.z) <= CITY_R;
+  return Math.hypot(x - CENTER.x, z - CENTER.z) <= ISLAND_R * 0.96;
 }
 
 function buildAdj(graph) {
@@ -31,7 +28,7 @@ function buildAdj(graph) {
     const a = byId.get(e.a), b = byId.get(e.b);
     if (!a || !b) continue;
     const length = Math.hypot(b.x - a.x, b.z - a.z);
-    if (!(length > 2)) continue;
+    if (!(length > 1)) continue;
     const mx = (a.x + b.x) * 0.5, mz = (a.z + b.z) * 0.5;
     if (!onCityRoad(mx, mz)) continue;
     const width = e.width || 7;
@@ -41,32 +38,48 @@ function buildAdj(graph) {
   return { byId, adj };
 }
 
-function edgeKey(a, b) {
-  return a < b ? a + ':' + b : b + ':' + a;
-}
-
-function dijkstra(adj, from, to) {
+/**
+ * Directionally biased Dijkstra that strongly penalizes sharp turns/U-turns
+ * and rewards staying straight on wide main avenues.
+ */
+function dijkstraSmooth(adj, byId, from, to, initialDir = null) {
   if (from === to) return { ids: [from], length: 0 };
   const dist = new Map();
   const prev = new Map();
-  const q = [[0, from]];
+  const q = [[0, from, initialDir]];
   dist.set(from, 0);
+
   while (q.length) {
     q.sort((a, b) => a[0] - b[0]);
-    const [d, u] = q.shift();
+    const [d, u, curDir] = q.shift();
     if (u === to) break;
-    if (d !== dist.get(u)) continue;
-    const nbrs = adj.get(u);
-    if (!nbrs) continue;
+    if (d > (dist.get(u) ?? Infinity) + 1e-4) continue;
+    const uNode = byId.get(u);
+    const nbrs = adj.get(u) || [];
     for (const n of nbrs) {
-      const nd = d + n.length;
+      const vNode = byId.get(n.to);
+      if (!vNode) continue;
+      const dx = vNode.x - uNode.x;
+      const dz = vNode.z - uNode.z;
+      const segLen = Math.hypot(dx, dz) || 1;
+      const dir = { x: dx / segLen, z: dz / segLen };
+
+      let turnPenalty = 0;
+      if (curDir) {
+        const dot = curDir.x * dir.x + curDir.z * dir.z;
+        if (dot < -0.2) turnPenalty = 300; // U-turn
+        else if (dot < 0.7) turnPenalty = (1 - dot) * 25; // sharp turn
+      }
+      const cost = n.length + turnPenalty * 0.5 - (n.width >= 12 ? 3.5 : 0);
+      const nd = d + Math.max(n.length * 0.4, cost);
       if (nd < (dist.get(n.to) ?? Infinity)) {
         dist.set(n.to, nd);
         prev.set(n.to, u);
-        q.push([nd, n.to]);
+        q.push([nd, n.to, dir]);
       }
     }
   }
+
   if (!prev.has(to) && from !== to) return null;
   const ids = [to];
   let c = to;
@@ -76,100 +89,198 @@ function dijkstra(adj, from, to) {
     ids.push(c);
   }
   ids.reverse();
-  return { ids, length: dist.get(to) ?? 0 };
+
+  let actualLen = 0;
+  for (let i = 1; i < ids.length; i++) {
+    const link = (adj.get(ids[i - 1]) || []).find(x => x.to === ids[i]);
+    if (link) actualLen += link.length;
+  }
+  return { ids, length: actualLen };
 }
 
-function pickNext(nbrs, prev, used, incoming, r) {
-  if (!nbrs.length) return null;
-  let best = null, bestScore = -Infinity;
-  for (const n of nbrs) {
-    if (n.to === prev) continue;
-    let score = r() * 0.6;
-    const unused = n._from != null ? !used.has(edgeKey(n._from, n.to)) : true;
-    if (unused) score += 3.2;
-    if (n.width >= 12) score += 0.8;
-    if (incoming) {
-      const dx = n._dx, dz = n._dz;
-      const len = Math.hypot(dx, dz) || 1;
-      const dot = incoming.x * (dx / len) + incoming.z * (dz / len);
-      if (dot < -0.55) score -= 4;
-      else score += (dot + 1) * 0.5;
+/**
+ * Generate a Large Flowing Circle Circuit around the city.
+ */
+function generateLargeCircleRoute(adj, byId, targetLength, r) {
+  const idealR = clamp(targetLength / (Math.PI * 2), 70, RESIDENTIAL_R + 65);
+  const dir = r() > 0.5 ? 1 : -1; // Clockwise or counter-clockwise
+  const startAng = r() * Math.PI * 2;
+  const numWaypoints = targetLength > 1200 ? 8 : 4;
+
+  const waypoints = [];
+  for (let i = 0; i < numWaypoints; i++) {
+    const a = startAng + dir * ((Math.PI * 2 * i) / numWaypoints);
+    const targetX = CENTER.x + Math.cos(a) * idealR;
+    const targetZ = CENTER.z + Math.sin(a) * idealR;
+
+    let bestNode = null, bestDist = Infinity;
+    for (const n of byId.values()) {
+      if ((adj.get(n.id) || []).length < 2) continue;
+      const d = Math.hypot(n.x - targetX, n.z - targetZ);
+      if (d < bestDist) {
+        bestDist = d;
+        bestNode = n.id;
+      }
     }
-    if (score > bestScore) { bestScore = score; best = n; }
+    if (bestNode && !waypoints.includes(bestNode)) waypoints.push(bestNode);
   }
-  if (best) return best;
-  return nbrs.find(n => n.to !== prev) || nbrs[0];
+
+  if (waypoints.length < 3) return null;
+
+  let allIds = [];
+  let totalLen = 0;
+  for (let i = 0; i < waypoints.length; i++) {
+    const from = waypoints[i];
+    const to = waypoints[(i + 1) % waypoints.length];
+    const seg = dijkstraSmooth(adj, byId, from, to);
+    if (!seg || seg.ids.length < 2) return null;
+    if (i === 0) allIds.push(...seg.ids);
+    else allIds.push(...seg.ids.slice(1));
+    totalLen += seg.length;
+  }
+
+  if (allIds[0] !== allIds[allIds.length - 1]) {
+    allIds.push(allIds[0]);
+  }
+
+  return { ids: allIds, length: totalLen };
 }
 
-function walkOut(adj, byId, start, target, r) {
-  const ids = [start];
-  const used = new Set();
-  let length = 0;
-  let cur = start;
-  let prev = null;
-  let incoming = null;
-  let guard = 0;
-  const limit = Math.max(40, target * 0.6);
+/**
+ * Generate a Straight Sprint Across The Map.
+ */
+function generateStraightSprintRoute(adj, byId, targetLength, r) {
+  const span = Math.min(targetLength * 0.6, RESIDENTIAL_R + 80);
+  const axes = [
+    { startX: CENTER.x - span, startZ: CENTER.z, endX: CENTER.x + span, endZ: CENTER.z },
+    { startX: CENTER.x + span, startZ: CENTER.z, endX: CENTER.x - span, endZ: CENTER.z },
+    { startX: CENTER.x, startZ: CENTER.z - span, endX: CENTER.x, endZ: CENTER.z + span },
+    { startX: CENTER.x, startZ: CENTER.z + span, endX: CENTER.x, endZ: CENTER.z - span },
+  ];
 
-  while (length < target && guard++ < 400) {
-    const raw = adj.get(cur) || [];
-    if (!raw.length) break;
-    const nbrs = raw.map(n => {
-      const node = byId.get(n.to);
-      return {
-        ...n,
-        _from: cur,
-        _dx: node.x - byId.get(cur).x,
-        _dz: node.z - byId.get(cur).z,
-      };
-    });
-    let next = pickNext(nbrs, prev, used, incoming, r);
-    if (!next) break;
-    ids.push(next.to);
-    used.add(edgeKey(cur, next.to));
-    length += next.length;
-    const na = byId.get(cur), nb = byId.get(next.to);
-    incoming = { x: nb.x - na.x, z: nb.z - na.z };
-    const il = Math.hypot(incoming.x, incoming.z) || 1;
-    incoming.x /= il; incoming.z /= il;
-    prev = cur;
-    cur = next.to;
-    if (length > target + limit) break;
+  const axis = axes[Math.floor(r() * axes.length)];
+
+  let startId = null, startDist = Infinity;
+  let endId = null, endDist = Infinity;
+
+  for (const n of byId.values()) {
+    if ((adj.get(n.id) || []).length < 1) continue;
+    const ds = Math.hypot(n.x - axis.startX, n.z - axis.startZ);
+    if (ds < startDist) { startDist = ds; startId = n.id; }
+    const de = Math.hypot(n.x - axis.endX, n.z - axis.endZ);
+    if (de < endDist) { endDist = de; endId = n.id; }
   }
-  return { ids, length, used };
+
+  if (!startId || !endId || startId === endId) return null;
+
+  const sNode = byId.get(startId), eNode = byId.get(endId);
+  const fwdDx = eNode.x - sNode.x, fwdDz = eNode.z - sNode.z;
+  const fwdLen = Math.hypot(fwdDx, fwdDz) || 1;
+  const initialDir = { x: fwdDx / fwdLen, z: fwdDz / fwdLen };
+
+  const path = dijkstraSmooth(adj, byId, startId, endId, initialDir);
+  if (!path || path.ids.length < 2) return null;
+
+  let trimmedIds = [path.ids[0]];
+  let curLen = 0;
+  for (let i = 1; i < path.ids.length; i++) {
+    const link = (adj.get(path.ids[i - 1]) || []).find(x => x.to === path.ids[i]);
+    const segLen = link ? link.length : 10;
+    trimmedIds.push(path.ids[i]);
+    curLen += segLen;
+    if (curLen >= targetLength) break;
+  }
+
+  return { ids: trimmedIds, length: curLen };
 }
 
-function densify(ids, byId, adj, loop) {
-  const points = [];
+/**
+ * Densify path with quadratic bezier corner fillets for ultra-smooth racing line.
+ */
+function densifySmooth(ids, byId, adj, loop) {
+  const cleanIds = [];
+  for (let i = 0; i < ids.length; i++) {
+    if (i === 0 || ids[i] !== ids[i - 1]) cleanIds.push(ids[i]);
+  }
+  const rawNodes = cleanIds.map(id => byId.get(id)).filter(Boolean);
+  if (rawNodes.length < 2) return [];
+
+  const n = rawNodes.length;
+  const rawPoints = [];
+  const FILLET_R = 7.5; // Radius of corner rounding in meters
+
+  const count = loop ? n : n - 1;
+  for (let i = 0; i < count; i++) {
+    const curr = rawNodes[i];
+    const next = rawNodes[(i + 1) % n];
+    const prev = rawNodes[(i - 1 + n) % n];
+
+    const dxNext = next.x - curr.x, dzNext = next.z - curr.z;
+    const lenNext = Math.hypot(dxNext, dzNext);
+    const dxPrev = curr.x - prev.x, dzPrev = curr.z - prev.z;
+    const lenPrev = Math.hypot(dxPrev, dzPrev);
+
+    if (lenNext < 0.5) continue;
+
+    const uNextX = dxNext / lenNext, uNextZ = dzNext / lenNext;
+    const uPrevX = lenPrev > 0.5 ? dxPrev / lenPrev : uNextX;
+    const uPrevZ = lenPrev > 0.5 ? dzPrev / lenPrev : uNextZ;
+
+    const rIn = (loop || i > 0) ? Math.min(FILLET_R, lenPrev * 0.4) : 0;
+    const rOut = (loop || i < count - 1) ? Math.min(FILLET_R, lenNext * 0.4) : 0;
+
+    // 1. Corner fillet at curr
+    if (rIn > 0 && rOut > 0) {
+      const pInX = curr.x - uPrevX * rIn, pInZ = curr.z - uPrevZ * rIn;
+      const pOutX = curr.x + uNextX * rOut, pOutZ = curr.z + uNextZ * rOut;
+      const arcSteps = 6;
+      for (let step = 0; step <= arcSteps; step++) {
+        const t = step / arcSteps;
+        const mt = 1 - t;
+        const bx = mt * mt * pInX + 2 * mt * t * curr.x + t * t * pOutX;
+        const bz = mt * mt * pInZ + 2 * mt * t * curr.z + t * t * pOutZ;
+        rawPoints.push({ x: bx, z: bz, width: 14 });
+      }
+    } else {
+      rawPoints.push({ x: curr.x, z: curr.z, width: 14 });
+    }
+
+    // 2. Straight segment to next node
+    const nextRIn = (loop || (i + 1) < count) ? Math.min(FILLET_R, lenNext * 0.4) : 0;
+    const straightStart = rOut;
+    const straightEnd = lenNext - nextRIn;
+    const straightLen = straightEnd - straightStart;
+
+    if (straightLen > 1.0) {
+      const steps = Math.max(1, Math.round(straightLen / SAMPLE));
+      for (let step = 1; step <= steps; step++) {
+        const t = step / steps;
+        const dist = straightStart + straightLen * t;
+        rawPoints.push({
+          x: curr.x + uNextX * dist,
+          z: curr.z + uNextZ * dist,
+          width: 14,
+        });
+      }
+    }
+  }
+
+  if (!loop) {
+    const lastNode = rawNodes[rawNodes.length - 1];
+    rawPoints.push({ x: lastNode.x, z: lastNode.z, width: 14 });
+  }
+
+  // Filter out redundant points and compute exact arc length s
   let s = 0;
-  const n = ids.length;
-  const last = loop ? n : n - 1;
-  for (let i = 0; i < last; i++) {
-    const a = byId.get(ids[i]);
-    const b = byId.get(ids[(i + 1) % n]);
-    if (!a || !b) continue;
-    const dx = b.x - a.x, dz = b.z - a.z;
-    const len = Math.hypot(dx, dz);
-    if (!(len > 0.5)) continue;
-    const link = (adj.get(ids[i]) || []).find(x => x.to === ids[(i + 1) % n]);
-    const width = link ? link.width : 7;
-    const steps = Math.max(1, Math.round(len / SAMPLE));
-    for (let k = 0; k < steps; k++) {
-      const t = k / steps;
-      points.push({
-        x: a.x + dx * t,
-        z: a.z + dz * t,
-        s,
-        width,
-      });
-      s += len / steps;
+  const points = [{ ...rawPoints[0], s: 0 }];
+  for (let i = 1; i < rawPoints.length; i++) {
+    const d = Math.hypot(rawPoints[i].x - rawPoints[i - 1].x, rawPoints[i].z - rawPoints[i - 1].z);
+    if (d > 0.3) {
+      s += d;
+      points.push({ ...rawPoints[i], s });
     }
   }
-  const end = byId.get(ids[loop ? 0 : ids.length - 1]);
-  if (end) {
-    const w = points.length ? points[points.length - 1].width : 7;
-    points.push({ x: end.x, z: end.z, s, width: w });
-  }
+
   return points;
 }
 
@@ -190,7 +301,7 @@ function sampleAt(points, s) {
     x: a.x + (b.x - a.x) * t,
     z: a.z + (b.z - a.z) * t,
     s,
-    width: a.width || 7,
+    width: a.width || 14,
     yaw: yawBetween(a, b),
   };
 }
@@ -206,12 +317,11 @@ function makeCheckpoints(points, loop) {
       z: p.z,
       s: p.s,
       yaw: p.yaw,
-      radius: Math.max(4.4, Math.min((p.width || 7) * 0.48, 6.4)),
+      radius: Math.max(4.6, Math.min((p.width || 14) * 0.48, 6.6)),
     });
   };
-  /* Sit the first gate a few metres down the road so the grid is behind it,
-     not inside the arch. */
-  pushAt(loop ? 0 : 22);
+
+  pushAt(loop ? 0 : 20);
   let next = CP_SPACING;
   while (next < total - (loop ? CP_SPACING * 0.45 : 16)) {
     pushAt(next);
@@ -220,57 +330,6 @@ function makeCheckpoints(points, loop) {
   if (!loop) pushAt(total);
   if (cps.length < 2) pushAt(total * 0.5);
   return cps;
-}
-
-function overlapRatio(outIds, backIds) {
-  if (outIds.length < 2 || backIds.length < 2) return 1;
-  const used = new Set();
-  for (let i = 1; i < outIds.length; i++) used.add(edgeKey(outIds[i - 1], outIds[i]));
-  let hit = 0, n = 0;
-  for (let i = 1; i < backIds.length; i++) {
-    n++;
-    if (used.has(edgeKey(backIds[i - 1], backIds[i]))) hit++;
-  }
-  return n ? hit / n : 1;
-}
-
-function closeLoop(adj, byId, ids, r) {
-  const start = ids[0];
-  const cur = ids[ids.length - 1];
-  if (cur === start) return ids;
-  const direct = dijkstra(adj, cur, start);
-  if (!direct) return null;
-  if (overlapRatio(ids, direct.ids) < 0.62) {
-    return ids.concat(direct.ids.slice(1));
-  }
-  /* Detour through a far node so the return is not just the outbound reversed. */
-  const c0 = byId.get(start), c1 = byId.get(cur);
-  let mid = null, midScore = -Infinity;
-  for (const n of byId.values()) {
-    if (n.id === start || n.id === cur) continue;
-    if ((adj.get(n.id) || []).length < 2) continue;
-    const d0 = Math.hypot(n.x - c0.x, n.z - c0.z);
-    const d1 = Math.hypot(n.x - c1.x, n.z - c1.z);
-    const score = Math.min(d0, d1) + r() * 40;
-    if (score > midScore) { midScore = score; mid = n.id; }
-  }
-  if (mid != null) {
-    const a = dijkstra(adj, cur, mid);
-    const b = dijkstra(adj, mid, start);
-    if (a && b && a.ids.length + b.ids.length > 3) {
-      return ids.concat(a.ids.slice(1), b.ids.slice(1));
-    }
-  }
-  return ids.concat(direct.ids.slice(1));
-}
-
-function pathLength(ids, adj) {
-  let L = 0;
-  for (let i = 1; i < ids.length; i++) {
-    const link = (adj.get(ids[i - 1]) || []).find(x => x.to === ids[i]);
-    if (link) L += link.length;
-  }
-  return L;
 }
 
 /**
@@ -285,43 +344,18 @@ export function generateRoute(graph, opts) {
   const r = rng((opts.seed ?? (Math.random() * 0xffffffff)) >>> 0);
   const { byId, adj } = buildAdj(graph);
 
-  const starts = [];
-  for (const n of byId.values()) {
-    const deg = (adj.get(n.id) || []).length;
-    if (deg >= 2) starts.push(n.id);
-  }
-  if (!starts.length) {
-    for (const id of adj.keys()) if ((adj.get(id) || []).length) starts.push(id);
-  }
-  if (!starts.length) return null;
+  const res = loop
+    ? generateLargeCircleRoute(adj, byId, target, r)
+    : generateStraightSprintRoute(adj, byId, target, r);
 
-  let best = null, bestErr = Infinity;
-  for (let t = 0; t < MAX_TRIES; t++) {
-    const start = starts[Math.floor(r() * starts.length)];
-    const walkTarget = loop ? target * (0.62 + r() * 0.16) : target * (0.92 + r() * 0.16);
-    const walk = walkOut(adj, byId, start, walkTarget, r);
-    if (walk.ids.length < 3) continue;
-    let ids = walk.ids;
-    if (loop) {
-      ids = closeLoop(adj, byId, ids, r);
-      if (!ids || ids.length < 4) continue;
-    }
-    const len = pathLength(ids, adj);
-    if (len < target * 0.45) continue;
-    const err = Math.abs(len - target) / target;
-    if (err < bestErr) {
-      bestErr = err;
-      best = { ids, len };
-      if (err < 0.15) break;
-    }
-  }
-  if (!best) return null;
+  if (!res || !res.ids || res.ids.length < 2) return null;
 
-  const points = densify(best.ids, byId, adj, loop);
+  const points = densifySmooth(res.ids, byId, adj, loop);
   if (points.length < 4) return null;
   const checkpoints = makeCheckpoints(points, loop);
   if (checkpoints.length < 2) return null;
   const a = points[0], b = points[1];
+
   return {
     points,
     checkpoints,
