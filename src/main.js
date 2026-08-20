@@ -71,8 +71,9 @@ const GFX_SHADOW = {
   high: { size: 4096, dist: 46 },
 };
 
-const TIME_MODES = ['dynamic', 'dynamic_fast', 'dynamic_slow', 'day', 'sunset', 'night', 'dawn'];
+const TIME_MODES = ['dynamic_15m', 'dynamic', 'dynamic_fast', 'dynamic_slow', 'day', 'sunset', 'night', 'dawn'];
 const TIME_MODE_LABELS = [
+  'DYNAMIC (15 MIN)',
   'DYNAMIC (3 MIN)',
   'DYNAMIC (1 MIN)',
   'DYNAMIC (8 MIN)',
@@ -749,7 +750,9 @@ class Game {
 
   _updateDayNight(dt) {
     const mode = TIME_MODES[this.gfx?.timeIdx ?? 0];
-    if (mode === 'dynamic') {
+    if (mode === 'dynamic_15m') {
+      this.timeOfDay = ((this.timeOfDay + dt * (1 / 900)) % 1 + 1) % 1;
+    } else if (mode === 'dynamic') {
       this.timeOfDay = ((this.timeOfDay + dt * (1 / 180)) % 1 + 1) % 1;
     } else if (mode === 'dynamic_fast') {
       this.timeOfDay = ((this.timeOfDay + dt * (1 / 60)) % 1 + 1) % 1;
