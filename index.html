@@ -41,8 +41,8 @@
     -webkit-tap-highlight-color: transparent;
     cursor: none; /* driving default — shown again only on pause menu */
   }
-  #view { display: block; width: 100vw; height: 100vh; touch-action: none; cursor: none; }
-  #hud { position: fixed; inset: 0; pointer-events: none; }
+  #view { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; display: block; touch-action: none; cursor: none; }
+  #hud { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; pointer-events: none; }
   #boot {
     position: fixed; inset: 0; display: grid; place-items: center;
     font: 500 12px/1.8 ui-sans-serif, system-ui, sans-serif;

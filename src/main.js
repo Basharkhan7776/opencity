@@ -19,6 +19,7 @@ import { Car, MAX_RPM, steerLockAt } from './car/physics.js';
 import { ChaseCamera } from './car/camera.js';
 import { Driver } from './car/driver.js';
 import { Input } from './core/input.js';
+import { Touch, safeInsets } from './ui/touch.js';
 import { celMaterial } from './render/cel.js';
 import { CelPipeline } from './render/outline.js';
 import { clamp, formatTime } from './core/util.js';
@@ -209,7 +210,9 @@ class Game {
       this.world.updateEnvironment(this.timeOfDay, this.player.pos, this.scene);
     }
 
+    this.touch = new Touch();
     this.input = new Input();
+    this.input.touch = this.touch;
     this.chase = new ChaseCamera(this.camera);
 
     /* Free-fly camera: Ctrl+Shift+C toggles between the chase cam and a free
@@ -291,6 +294,7 @@ class Game {
     addEventListener('keydown', wake, { once: true });
 
     this.hud = new Hud(document.getElementById('hud'), this.world?.city?.graph);
+    this.hud.touch = this.touch;
     this.hud.setCarName(VEHICLES[this.vehicleIndex].name);
     this.hudOn = q.get('hud') !== '0';
 
@@ -368,18 +372,31 @@ class Game {
   }
 
   resize() {
-    const w = innerWidth, h = innerHeight;
+    const w = window.innerWidth || document.documentElement.clientWidth || 800;
+    const h = window.innerHeight || document.documentElement.clientHeight || 600;
+    const insets = safeInsets();
+    this.touch?.resize(w, h, insets);
     const scale = GFX_RES[this.gfx?.resIdx ?? 0];
     const cap = TIERS[this.tier].dpr;
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, cap) * scale);
-    this.renderer.setSize(w, h, false);
+    const dpr = Math.min(window.devicePixelRatio || 1, cap) * scale;
+    this.renderer.setPixelRatio(dpr);
+    this.renderer.setSize(w, h, true);
     this.pipeline.setSize(w, h);
-    this.hud.resize(w, h, devicePixelRatio);
+    this.hud.resize(w, h, dpr);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
 
   step(dt) {
+    if (this.touch) {
+      const camDelta = this.touch.consumeCameraDelta();
+      if (camDelta.x !== 0 || camDelta.y !== 0) {
+        this.lookYaw -= camDelta.x * 0.004;
+        this.lookPitch = clamp(this.lookPitch - camDelta.y * 0.003, -0.85, 0.55);
+      }
+      this.touch.setMenuMode(this.paused || !!this.menu || !!this.race?.over);
+    }
+
     this.input.update(dt);
 
     /* While paused the world is not redrawn — see frame() — and the only
@@ -1230,10 +1247,12 @@ class Hud {
     }
   }
 
-  resize(w, h, dpr) {
+  resize(w, h, dpr = window.devicePixelRatio || 1) {
     this.w = w; this.h = h; this.dpr = dpr;
     this.canvas.width = Math.round(w * dpr);
     this.canvas.height = Math.round(h * dpr);
+    this.canvas.style.width = w + 'px';
+    this.canvas.style.height = h + 'px';
   }
 
   setCarName(name) { this.carName = name; }
@@ -1254,44 +1273,136 @@ class Hud {
 
     if (paused) {
       this._drawMenu(menu);
+      if (this.touch) this._drawTouch(ctx, this.touch);
       return;
     }
 
-    /* 1. Real-time City Mini Map in Bottom-Left */
+    /* 1. Real-time City Mini Map (Top-Right on Mobile, Bottom-Left on Desktop) */
     this._drawMinimap(ctx, w, h);
 
     /* 2. Active Race HUD at Top-Centre */
     if (this.race) this._drawRace(ctx, w, h);
 
-    /* 3. Speed Readout, Bottom-Right (No gear number) */
-    const kmh = Math.round(this.speed * 3.6);
-    ctx.textAlign = 'right';
-    ctx.shadowColor = 'rgba(20,10,14,0.9)';
-    ctx.shadowBlur = 10;
-    ctx.font = '700 58px ui-sans-serif, system-ui, sans-serif';
-    ctx.fillStyle = '#f0e6d8';
-    ctx.fillText(String(kmh), w - 28, h - 50);
-    ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
-    ctx.fillStyle = '#c9b8a5';
-    ctx.fillText('KM/H', w - 28, h - 26);
-    ctx.shadowBlur = 0;
+    /* 3. Speed Readout (Top-Right on Mobile, Bottom-Right on Desktop) */
+    this._drawSpeedometer(ctx, w, h);
 
     /* 4. Current Vehicle Name, Bottom-Centre */
-    if (this.carName) {
+    if (this.carName && !this.touch?.live) {
       ctx.textAlign = 'center';
       ctx.font = '600 13px ui-sans-serif, system-ui, sans-serif';
       ctx.fillStyle = 'rgba(240,230,216,0.65)';
       ctx.fillText(this.carName, w / 2, h - 22);
     }
+
+    /* 5. Translucent Touch Controls */
+    if (this.touch) this._drawTouch(ctx, this.touch);
   }
 
-  /* ---- Mini Map Radar (Bottom-Left) ---------------------------------- */
+  _drawSpeedometer(ctx, w, h) {
+    const isMobile = this.touch?.live;
+    const kmh = Math.round(this.speed * 3.6);
+    ctx.save();
+    if (isMobile) {
+      const r = 64;
+      const pad = 18;
+      const x = w - pad - 6;
+      const y = pad + r * 2 + 36;
+      ctx.textAlign = 'right';
+      ctx.shadowColor = 'rgba(20,10,14,0.9)';
+      ctx.shadowBlur = 10;
+      ctx.font = '700 36px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = '#f0e6d8';
+      ctx.fillText(String(kmh), x, y);
+      ctx.font = '600 13px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = '#c9b8a5';
+      ctx.fillText('KM/H', x, y + 16);
+    } else {
+      ctx.textAlign = 'right';
+      ctx.shadowColor = 'rgba(20,10,14,0.9)';
+      ctx.shadowBlur = 10;
+      ctx.font = '700 58px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = '#f0e6d8';
+      ctx.fillText(String(kmh), w - 28, h - 50);
+      ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = '#c9b8a5';
+      ctx.fillText('KM/H', w - 28, h - 26);
+    }
+    ctx.restore();
+  }
+
+  _drawTouchButton(ctx, r, label, pressed, colorType = 'default') {
+    if (!r) return;
+    const c = Math.min(r.w, r.h) * 0.28;
+    ctx.save();
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(r.x, r.y, r.w, r.h, c);
+    else ctx.rect(r.x, r.y, r.w, r.h);
+
+    ctx.fillStyle = pressed
+      ? (colorType === 'green' ? 'rgba(38, 185, 90, 0.72)'
+        : colorType === 'red' ? 'rgba(225, 45, 55, 0.78)'
+        : 'rgba(250, 195, 45, 0.75)')
+      : 'rgba(16, 22, 34, 0.52)';
+    ctx.fill();
+
+    ctx.lineWidth = pressed ? 3.0 : 1.8;
+    ctx.strokeStyle = pressed ? '#ffffff' : 'rgba(255, 255, 255, 0.40)';
+    ctx.stroke();
+
+    const isSymbol = label.length <= 2;
+    const fontSize = isSymbol
+      ? Math.max(22, Math.min(36, r.h * 0.48))
+      : Math.max(13, Math.min(18, r.h * 0.36));
+    const textColor = pressed ? '#ffffff' : 'rgba(255, 255, 255, 0.95)';
+    ctx.font = `700 ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = textColor;
+    ctx.shadowColor = 'rgba(0,0,0,0.85)';
+    ctx.shadowBlur = 4;
+    ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2);
+    ctx.restore();
+  }
+
+  _drawTouch(ctx, touch) {
+    const tc = touch.display();
+    if (!tc) return;
+    const L = tc.layout;
+    if (!L) return;
+
+    if (tc.inMenu) {
+      // Menu D-pad
+      this._drawTouchButton(ctx, L.menuUp, L.menuUp.label, tc.menuUpPressed, 'gold');
+      this._drawTouchButton(ctx, L.menuDown, L.menuDown.label, tc.menuDownPressed, 'gold');
+      this._drawTouchButton(ctx, L.menuLeft, L.menuLeft.label, tc.menuLeftPressed, 'gold');
+      this._drawTouchButton(ctx, L.menuRight, L.menuRight.label, tc.menuRightPressed, 'gold');
+
+      // Menu Actions
+      this._drawTouchButton(ctx, L.menuConfirm, L.menuConfirm.label, tc.confirmPressed, 'green');
+      this._drawTouchButton(ctx, L.menuBack, L.menuBack.label, tc.pausePressed, 'red');
+    } else {
+      // Top-Left Pause Button
+      this._drawTouchButton(ctx, L.pauseBtn, L.pauseBtn.label, tc.pausePressed, 'gold');
+
+      // Bottom-Left Steering Buttons
+      this._drawTouchButton(ctx, L.leftBtn, L.leftBtn.label, tc.leftPressed, 'gold');
+      this._drawTouchButton(ctx, L.rightBtn, L.rightBtn.label, tc.rightPressed, 'gold');
+
+      // Bottom-Right Pedals & Handbrake
+      this._drawTouchButton(ctx, L.handbrakeBtn, L.handbrakeBtn.label, tc.handbrakePressed, 'red');
+      this._drawTouchButton(ctx, L.brakePedal, L.brakePedal.label, tc.brakePressed, 'red');
+      this._drawTouchButton(ctx, L.gasPedal, L.gasPedal.label, tc.throttlePressed, 'green');
+    }
+  }
+
+  /* ---- Mini Map Radar (Top-Right on mobile, Bottom-Left on desktop) --- */
 
   _drawMinimap(ctx, w, h) {
-    const r = 74; // Radar radius in CSS pixels
-    const pad = 24;
-    const cx = pad + r;
-    const cy = h - pad - r;
+    const isMobile = this.touch?.live;
+    const r = isMobile ? 64 : 74; // Radar radius in CSS pixels
+    const pad = isMobile ? 18 : 24;
+    const cx = isMobile ? (w - pad - r) : (pad + r);
+    const cy = isMobile ? (pad + r) : (h - pad - r);
 
     ctx.save();
 
@@ -1615,30 +1726,34 @@ class Hud {
       }
     }
 
-    // Guide lines at bottom
+    // Guide lines / touch instructions at bottom
     ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(240,230,216,0.6)';
-    ctx.fillText('UP / DOWN  choose    ENTER  select    ESC  resume', w / 2, startY + items.length * 34 + 20);
+    if (this.touch?.live) {
+      ctx.fillText('Tap on-screen D-Pad & Action buttons or menu items', w / 2, startY + items.length * 34 + 20);
+    } else {
+      ctx.fillText('UP / DOWN  choose    ENTER  select    ESC  resume', w / 2, startY + items.length * 34 + 20);
 
-    // Controls guide badge bar
-    const barW = Math.min(680, w * 0.9);
-    const barH = 38;
-    const barX = (w - barW) / 2;
-    const barY = Math.max(startY + items.length * 34 + 44, h - 58);
+      // Controls guide badge bar
+      const barW = Math.min(680, w * 0.9);
+      const barH = 38;
+      const barX = (w - barW) / 2;
+      const barY = Math.max(startY + items.length * 34 + 44, h - 58);
 
-    ctx.fillStyle = 'rgba(28, 18, 24, 0.72)';
-    ctx.strokeStyle = 'rgba(184, 114, 79, 0.35)';
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(barX, barY, barW, barH, 6);
-    else ctx.rect(barX, barY, barW, barH);
-    ctx.fill();
-    ctx.stroke();
+      ctx.fillStyle = 'rgba(28, 18, 24, 0.72)';
+      ctx.strokeStyle = 'rgba(184, 114, 79, 0.35)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(barX, barY, barW, barH, 6);
+      else ctx.rect(barX, barY, barW, barH);
+      ctx.fill();
+      ctx.stroke();
 
-    ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
-    ctx.fillStyle = '#ffd54a';
-    ctx.textAlign = 'center';
-    ctx.fillText('CONTROLS:  WASD / ARROWS  drive    SPACE  handbrake / drift    C  look back    CTRL+F  fullscreen    R  reset', w / 2, barY + 23);
+      ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = '#ffd54a';
+      ctx.textAlign = 'center';
+      ctx.fillText('CONTROLS:  WASD / ARROWS  drive    SPACE  handbrake / drift    C  look back    CTRL+F  fullscreen    R  reset', w / 2, barY + 23);
+    }
   }
 
   _drawRaceSetup(menu) {

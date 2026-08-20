@@ -507,47 +507,22 @@ export class Hud {
        the two objects share one column and one horizontal axis width. */
     const mapW = Math.min(330 * u, w * 0.30);
     const mapH = 118 * u;
+    const mapX = this.touchUi ? (w - mR - mapW) : mL;
+    const dialCx = this.touchUi ? (w - mR - mapW - dialR - 12 * u) : (w - mR - dialR);
+    const dialCy = this.touchUi ? (mT + dialR) : (h - mB - dialR);
+
     this.L = {
       u, m,
-      /* The four safe-area margins, for the two consumers that cannot read
-         them off a rect in here: _drawPosition, whose badge is sized from its
-         own text and so has no entry, and _drawTouch's hint slab. */
       pad: { t: mT, r: mR, b: mB, l: mL },
       touch: this.touchUi,
-      /* THE DIAL AND THE BADGE MOVE ON A TOUCH BUILD, and only there.
-       *
-       * They have to. A throttle pedal in the bottom-right corner of a
-       * 844x390 viewport occupies x 746..818, y 239..372, and the dial sits at
-       * x 721..828, y 267..374 — the same pixels, with the most-read
-       * instrument in the game under the thumb that is holding the throttle
-       * down. The badge and the brake collide the same way on the other side.
-       *
-       * Rejected: shrinking the pedals to fit around them. A touch target is a
-       * physical quantity and 44 CSS px is the floor (src/ui/touch.js), so
-       * there is nothing to give.
-       *
-       * So on a phone the readouts take the top band and the thumbs take the
-       * bottom one: the left column runs card, strip, badge from the top, the
-       * timer stays top centre, and the dial goes top right — which mirrors
-       * the card and leaves the whole bottom third to the controls. It is a
-       * better phone layout than the one it replaces and it is unreachable
-       * from a build with no touchscreen. */
-      dial: { r: dialR, cx: w - mR - dialR, cy: this.touchUi ? mT + dialR : h - mB - dialR },
-      map: { x: mL, y: mT, w: mapW, h: mapH },
-      /* The field, under the stage card. See _drawStrip for why it is a second
-         object rather than three more marks on the card. */
+      dial: { r: dialR, cx: dialCx, cy: dialCy },
+      map: { x: mapX, y: mT, w: mapW, h: mapH },
       strip: {
-        x: mL, y: mT + mapH + 8 * u, w: mapW, h: 34 * u,
+        x: mapX, y: mT + mapH + 8 * u, w: mapW, h: 34 * u,
         pad: 16 * u, half: (mapW - 32 * u) / 2, r: 5.5 * u, ink: 3 * u,
       },
       timer: { size: 30 * u, y: mT },
       pos: { numSize: 66 * u, sufSize: 26 * u },
-      /* The classification card. Sized off the widest thing it has to set —
-         a four-column row of position, name, time and gap at 22 grid units —
-         rather than picked and then discovered to be too small, which is the
-         mistake this project keeps paying for in screen-space size. At
-         1600x900 the plate is 700 x 264 device pixels, twice the area of the
-         countdown's GO and a fifth of the frame; hudparity.mjs measures it. */
       card: {
         w: 560 * u, rowH: 38 * u, headH: 40 * u, pad: 16 * u,
         size: 22 * u, cy: 0.53,
@@ -1499,7 +1474,7 @@ export class Hud {
        strip, for the reason given at `dial` in resize(): the bottom corners
        belong to the thumbs. */
     const P = this.L.pad, S = this.L.strip;
-    const x = P.l;
+    const x = this.L.touch ? S.x : P.l;
     const y = this.L.touch ? S.y + S.h + 8 * u : this.h - P.b - this._badge.h;
     const cue = this._positionAccent;
     /* The exact old path. Keeping it as an early return is what makes a
@@ -1987,128 +1962,62 @@ export class Hud {
    * its own — the payload is simply null under manual mode, which is the
    * countdown's and the ending's arrangement rather than a new one.
    */
-  _drawTouch(ctx, tc) {
-    /* One scale for the whole control set, off the SHORT side and against a
-       390 px reference — a phone in landscape, the only shape this draws in.
-       So `k` is 1 on an iPhone and about 1.9 on a 10-inch tablet, and the
-       type grows with the pedal it labels rather than with `u`, which is 0.54
-       on the same phone and would set these captions at 11 px. */
-    const k = Math.min(this.w, this.h) / 390;
-    const ink = 3 * k;
+  _drawTouchButton(ctx, r, label, pressed, colorType = 'default', k) {
+    if (!r) return;
+    const c = Math.min(r.w, r.h) * 0.28;
+    ctx.save();
+    chamfer(ctx, r.x, r.y, r.w, r.h, c);
+    ctx.fillStyle = pressed
+      ? (colorType === 'green' ? 'rgba(38, 185, 90, 0.72)'
+        : colorType === 'red' ? 'rgba(225, 45, 55, 0.78)'
+        : 'rgba(250, 195, 45, 0.75)')
+      : 'rgba(16, 22, 34, 0.52)';
+    ctx.fill();
 
-    for (const p of tc.pedals) {
-      const isBrake = p.kind === 'brake';
-      /* The chamfer, off the SHORT side, so a tall capsule keeps parallel
-         flanks instead of turning into a lozenge with no straight edge for the
-         thumb to find. */
-      const c = Math.min(p.w, p.h) * 0.26;
-      ctx.fillStyle = SHADOW;
-      chamfer(ctx, p.x + 3 * k, p.y + 4 * k, p.w, p.h, c); ctx.fill();
-      /* Cream body, coloured fill, ink outline — the timer's delta chip and
-         the pause plate's spine in a different arrangement, so a control reads
-         as the same printed object as the instruments it sits beside. */
-      ctx.fillStyle = CREAM;
-      chamfer(ctx, p.x, p.y, p.w, p.h, c); ctx.fill();
-
-      /* The fill IS the command, and it rises from the foot because that is
-         the end the thumb pushes. A player learns the detent by watching this
-         go solid the moment they cross it, which is the only teaching a
-         control with no travel can offer. */
-      const amt = clamp(p.amount, 0, 1);
-      if (amt > 0) {
-        ctx.save();
-        chamfer(ctx, p.x, p.y, p.w, p.h, c); ctx.clip();
-        ctx.fillStyle = isBrake ? RED : GREEN;
-        ctx.fillRect(p.x, p.y + p.h * (1 - amt), p.w, p.h * amt + 1);
-        ctx.restore();
-      }
-      /* Where full commences. A hairline rather than a second plate, in the
-         demoted cream the dial face and the results card already use for a
-         step in the paper. */
-      if (tc.detent > 0) {
-        const dy = p.y + p.h * (1 - tc.detent);
-        ctx.save();
-        chamfer(ctx, p.x, p.y, p.w, p.h, c); ctx.clip();
-        ctx.lineWidth = 1.6 * k;
-        ctx.strokeStyle = amt >= tc.detent ? CREAM : CREAM_DIM;
-        ctx.beginPath(); ctx.moveTo(p.x, dy); ctx.lineTo(p.x + p.w, dy); ctx.stroke();
-        ctx.restore();
-      }
-      ctx.lineWidth = ink; ctx.lineJoin = 'round'; ctx.strokeStyle = INK;
-      chamfer(ctx, p.x, p.y, p.w, p.h, c); ctx.stroke();
-
-      /* Outlined type, not flat, because the fill slides underneath it: a
-         cream caption is invisible on cream and an ink one is invisible on
-         red. Cream over an ink outline reads on both, which is the same
-         reason the world's cel shader outlines everything it draws. */
-      const ls = Math.max(11, Math.min(17, p.w * 0.20));
-      /* Below the chamfer, not on it: at the very top the capsule is still
-         narrowing and the caption hangs over both cut corners — caught in
-         .fix/tprobe3.png, where BRAKE and GAS straddled the top edge. */
-      drawText(ctx, isBrake ? 'BRAKE' : 'GAS', p.x + p.w / 2, p.y + c * 0.55, ls,
-        { align: 'center', color: CREAM, outline: 2.6 * k, weight: 1.35, tracking: 0.9 });
-    }
-
-    /* The steering readout. It is a READOUT and not a control — the control is
-       the phone itself, or a drag anywhere outside the pedals — and it exists
-       because a tilt has no visible zero. Without it a player who has drifted
-       off neutral has no way to tell a mis-calibration from a car that
-       understeers, which is the single most confusing failure this scheme has.
-       The datum notch is the answer to that: mark on the notch, wheel
-       straight. */
-    const b = tc.bar;
-    const bc = b.h * 0.5;
-    ctx.fillStyle = SHADOW;
-    chamfer(ctx, b.x + 2 * k, b.y + 3 * k, b.w, b.h, bc); ctx.fill();
-    ctx.fillStyle = RPM_TRACK;
-    chamfer(ctx, b.x, b.y, b.w, b.h, bc); ctx.fill();
-    ctx.lineWidth = 2.4 * k; ctx.strokeStyle = INK;
-    chamfer(ctx, b.x, b.y, b.w, b.h, bc); ctx.stroke();
-
-    const mid = b.x + b.w / 2;
-    ctx.lineWidth = 2 * k; ctx.strokeStyle = INK_SOFT;
-    ctx.beginPath();
-    ctx.moveTo(mid, b.y + 3 * k); ctx.lineTo(mid, b.y + b.h - 3 * k);
+    ctx.lineWidth = (pressed ? 3.2 : 2.0) * k;
+    ctx.strokeStyle = pressed ? '#ffffff' : 'rgba(255, 255, 255, 0.40)';
     ctx.stroke();
 
-    /* The commanded lock, drawn as a bar growing out of the datum rather than
-       as a floating pip: a pip says where the wheel is and a bar says how much
-       of it is being used, and the second is what a driver wants from the
-       corner of an eye. */
-    const st = clamp(tc.steer, -1, 1);
-    if (Math.abs(st) > 0.001) {
-      const half = (b.w / 2) - 4 * k;
-      ctx.save();
-      chamfer(ctx, b.x, b.y, b.w, b.h, bc); ctx.clip();
-      ctx.fillStyle = YELLOW;
-      const bw2 = half * Math.abs(st);
-      ctx.fillRect(st < 0 ? mid - bw2 : mid, b.y + 4 * k, bw2, b.h - 8 * k);
-      ctx.restore();
-    }
+    const fontSize = Math.max(12, Math.min(22, r.h * 0.36));
+    const textColor = pressed ? '#ffffff' : 'rgba(255, 255, 255, 0.95)';
+    drawText(ctx, label, r.x + r.w / 2, r.y + (r.h - fontSize) / 2, fontSize, {
+      align: 'center',
+      color: textColor,
+      outline: 2.2 * k,
+      outlineColor: 'rgba(0, 0, 0, 0.85)',
+      weight: 1.35,
+      tracking: 1.0,
+    });
+    ctx.restore();
+  }
 
-    /* Which scheme is live, in three or four letters beside the bar. Not a
-       slab and not a sentence: it is the answer to "why is tilting doing
-       nothing", it has to be legible at a glance mid-corner, and a phone
-       screen has no room for anything larger down there. DRAG is the fallback
-       — no gyroscope, or an iOS permission refused — and the game is fully
-       playable on it, which is why the word is a label and not a warning. */
-    const ss = Math.max(10, Math.min(14, b.h * 0.72));
-    drawText(ctx, tc.tilt ? 'TILT' : 'DRAG', b.x - 7 * k, b.y + (b.h - ss) / 2, ss,
-      { align: 'right', color: CREAM, outline: 2.4 * k, weight: 1.3, tracking: 1.2 });
+  _drawTouch(ctx, tc) {
+    const k = Math.min(this.w, this.h) / 390;
+    const L = tc.layout;
+    if (!L) return;
 
-    /* The re-centre control. Present only when tilt is (touch.js returns null
-       for it otherwise), because on the drag fallback there is nothing to
-       centre — the anchor is wherever the thumb went down. */
-    const pl = tc.pill;
-    if (pl) {
-      const pc = pl.h * 0.34;
-      ctx.fillStyle = SHADOW;
-      chamfer(ctx, pl.x + 2 * k, pl.y + 3 * k, pl.w, pl.h, pc); ctx.fill();
-      ctx.fillStyle = INK;
-      chamfer(ctx, pl.x, pl.y, pl.w, pl.h, pc); ctx.fill();
-      const ps = Math.max(10, Math.min(14, pl.h * 0.44));
-      drawText(ctx, 'CENTRE', pl.x + pl.w / 2, pl.y + (pl.h - ps) / 2, ps,
-        { align: 'center', color: tc.calibrated ? CREAM : YELLOW, weight: 1.3, tracking: 1.1 });
+    if (tc.inMenu) {
+      // Menu D-pad
+      this._drawTouchButton(ctx, L.menuUp, L.menuUp.label, tc.menuUpPressed, 'gold', k);
+      this._drawTouchButton(ctx, L.menuDown, L.menuDown.label, tc.menuDownPressed, 'gold', k);
+      this._drawTouchButton(ctx, L.menuLeft, L.menuLeft.label, tc.menuLeftPressed, 'gold', k);
+      this._drawTouchButton(ctx, L.menuRight, L.menuRight.label, tc.menuRightPressed, 'gold', k);
+
+      // Menu Actions
+      this._drawTouchButton(ctx, L.menuConfirm, L.menuConfirm.label, tc.confirmPressed, 'green', k);
+      this._drawTouchButton(ctx, L.menuBack, L.menuBack.label, tc.pausePressed, 'red', k);
+    } else {
+      // Top-Left Pause Button
+      this._drawTouchButton(ctx, L.pauseBtn, L.pauseBtn.label, tc.pausePressed, 'gold', k);
+
+      // Bottom-Left Steering Buttons
+      this._drawTouchButton(ctx, L.leftBtn, L.leftBtn.label, tc.leftPressed, 'gold', k);
+      this._drawTouchButton(ctx, L.rightBtn, L.rightBtn.label, tc.rightPressed, 'gold', k);
+
+      // Bottom-Right Pedals & Handbrake
+      this._drawTouchButton(ctx, L.handbrakeBtn, L.handbrakeBtn.label, tc.handbrakePressed, 'red', k);
+      this._drawTouchButton(ctx, L.brakePedal, L.brakePedal.label, tc.brakePressed, 'red', k);
+      this._drawTouchButton(ctx, L.gasPedal, L.gasPedal.label, tc.throttlePressed, 'green', k);
     }
   }
 

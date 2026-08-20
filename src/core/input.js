@@ -266,6 +266,7 @@ export class Input {
       if (touch.steer !== 0) steerWant = touch.steer;
       thr = Math.max(thr, touch.throttle);
       brk = Math.max(brk, touch.brake);
+      hb = Math.max(hb, touch.handbrake);
     }
 
     /* Raw. A stick is already a position and a key is already a request; the
@@ -307,16 +308,23 @@ export class Input {
       stickX = this._padMenuX;
     }
 
+    const touchPause = touch?.takePause?.() || false;
+    const touchUp = touch?.takeMenuUp?.() || false;
+    const touchDown = touch?.takeMenuDown?.() || false;
+    const touchLeft = touch?.takeMenuLeft?.() || false;
+    const touchRight = touch?.takeMenuRight?.() || false;
+    const touchConfirm = touch?.takeConfirm?.() || false;
+
     /* Start pauses. A player holding a pad has no Escape key within reach,
        and Start is the button every console has meant this with for thirty
        years. It used to be wired to the countdown's skip; pausing is the more
        valuable of the two and the countdown is three seconds long. */
-    this.pausePressed = this.pressed('pause') || padEdge(PAD.start);
-    this.menuUpPressed = this.pressed('menuUp') || padEdge(PAD.dpadUp) || stick < 0;
-    this.menuDownPressed = this.pressed('menuDown') || padEdge(PAD.dpadDown) || stick > 0;
-    this.menuLeftPressed = this.pressed('menuLeft') || padEdge(PAD.dpadLeft) || stickX < 0;
-    this.menuRightPressed = this.pressed('menuRight') || padEdge(PAD.dpadRight) || stickX > 0;
-    this.confirmPressed = this.pressed('confirm') || padEdge(PAD.south);
+    this.pausePressed = this.pressed('pause') || padEdge(PAD.start) || touchPause;
+    this.menuUpPressed = this.pressed('menuUp') || padEdge(PAD.dpadUp) || stick < 0 || touchUp;
+    this.menuDownPressed = this.pressed('menuDown') || padEdge(PAD.dpadDown) || stick > 0 || touchDown;
+    this.menuLeftPressed = this.pressed('menuLeft') || padEdge(PAD.dpadLeft) || stickX < 0 || touchLeft;
+    this.menuRightPressed = this.pressed('menuRight') || padEdge(PAD.dpadRight) || stickX > 0 || touchRight;
+    this.confirmPressed = this.pressed('confirm') || padEdge(PAD.south) || touchConfirm;
     /* B backs out of a menu, which on this one means RESUME. Folded into the
        pause edge because that is exactly what pause means while a menu is
        already up: the caller toggles. */
