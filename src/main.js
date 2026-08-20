@@ -208,6 +208,9 @@ class Game {
       if (e.ctrlKey && e.shiftKey && (e.code === 'KeyC' || e.key === 'C')) {
         e.preventDefault();
         this.toggleFly();
+      } else if ((e.ctrlKey || e.metaKey) && (e.code === 'KeyF' || e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        this.toggleFullscreen();
       }
     });
 
@@ -217,14 +220,36 @@ class Game {
     this.lookPitch = 0;
     this._pointerLocked = false;
     this._setCursorVisible(false);
+
+    const forceFullscreenStart = () => {
+      if (!this.paused && !document.fullscreenElement) {
+        this._requestFullscreen();
+        this._requestPointerLock();
+      }
+    };
+    window.addEventListener('click', forceFullscreenStart);
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') return;
+      forceFullscreenStart();
+    });
+    window.addEventListener('touchstart', forceFullscreenStart, { passive: true });
+
     this.canvas.addEventListener('click', () => {
-      if (!this.paused) this._requestPointerLock();
+      if (!this.paused) {
+        this._requestFullscreen();
+        this._requestPointerLock();
+      }
     });
     document.addEventListener('pointerlockchange', () => {
       this._pointerLocked = document.pointerLockElement === this.canvas;
       /* Cursor only while the pause menu is open. While driving it stays
          hidden even if the browser briefly drops pointer lock (Esc once). */
       this._setCursorVisible(this.paused);
+    });
+    document.addEventListener('fullscreenchange', () => {
+      if (!document.fullscreenElement && !this.paused) {
+        this.togglePause();
+      }
     });
     addEventListener('mousemove', e => {
       if (this.paused) return;
@@ -490,12 +515,14 @@ class Game {
     if (this.paused) {
       this.menu = { view: 'main', index: 0, liveRace: !!this.race };
       this.audio.stop();
+      this._exitFullscreen();
       this._exitPointerLock();
       this._setCursorVisible(true);
     } else {
       this.menu = null;
       this.audio.start();
       this._setCursorVisible(false);
+      this._requestFullscreen();
       this._requestPointerLock();
     }
   }
@@ -506,6 +533,28 @@ class Game {
     document.body.style.cursor = v;
     document.documentElement.style.cursor = v;
     if (this.canvas) this.canvas.style.cursor = v;
+  }
+
+  _requestFullscreen() {
+    const elem = document.documentElement;
+    if (!document.fullscreenElement) {
+      elem.requestFullscreen?.()?.catch?.(() => {});
+    }
+  }
+
+  _exitFullscreen() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.()?.catch?.(() => {});
+    }
+  }
+
+  toggleFullscreen() {
+    if (document.fullscreenElement) {
+      this._exitFullscreen();
+    } else {
+      this._requestFullscreen();
+      if (!this.paused) this._requestPointerLock();
+    }
   }
 
   _requestPointerLock() {
@@ -1042,10 +1091,12 @@ class Game {
     if (next === this.paused) return;
     this.paused = next;
     if (this.paused) {
+      this._exitFullscreen();
       this._exitPointerLock();
       this._setCursorVisible(true);
     } else {
       this._setCursorVisible(false);
+      this._requestFullscreen();
       this._requestPointerLock();
     }
   }
@@ -1546,7 +1597,7 @@ class Hud {
     ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = '#ffd54a';
     ctx.textAlign = 'center';
-    ctx.fillText('CONTROLS:  WASD / ARROWS  drive    SPACE  handbrake / drift    C  look back    R  reset', w / 2, barY + 23);
+    ctx.fillText('CONTROLS:  WASD / ARROWS  drive    SPACE  handbrake / drift    C  look back    CTRL+F  fullscreen    R  reset', w / 2, barY + 23);
   }
 
   _drawRaceSetup(menu) {
