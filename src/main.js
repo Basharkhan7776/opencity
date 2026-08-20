@@ -369,14 +369,28 @@ class Game {
 
     if (this.fly && !this.race) {
       this.flyStep(dt);
+      this.time += dt;
+
+      const p = this.player;
+      p.lastImpact = 0;
+      p.landingForce = 0;
+      p.step(dt, { steer: 0, throttle: 0, brake: 1.0, handbrake: 1.0 });
+      if (this.playerView) p.applyTo(this.playerView, 0);
+
       this.pipeline.update(dt, { speed: 0 });
       this.hud.update(dt, {
         speed: 0,
         playerX: this.camera.position.x,
         playerZ: this.camera.position.z,
-        playerYaw: this.flyYaw || 0,
+        playerYaw: this.lookYaw || 0,
         race: null,
       });
+
+      if (this.ambientEnabled) {
+        const camX = this.camera.position.x, camZ = this.camera.position.z;
+        if (this.pedestrians) this.pedestrians.update(dt, camX, camZ);
+        if (this.traffic) this.traffic.update(dt, { pos: { x: camX, z: camZ } }, this.pedestrians);
+      }
       return;
     }
 
@@ -1487,29 +1501,52 @@ class Hud {
     ctx.fillStyle = '#f0e6d8';
     ctx.shadowColor = 'rgba(20,10,14,0.9)';
     ctx.shadowBlur = 12;
-    ctx.fillText('PAUSED', w / 2, h / 2 - 92);
+    ctx.fillText('PAUSED', w / 2, h / 2 - 105);
     ctx.shadowBlur = 0;
     ctx.font = '500 15px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = '#c9b8a5';
-    ctx.fillText(this.carName || '', w / 2, h / 2 - 60);
+    ctx.fillText(this.carName || '', w / 2, h / 2 - 75);
 
     const items = menu?.liveRace
       ? ['RESUME', 'SETTINGS', 'LEAVE RACE']
       : ['RESUME', 'RACE', 'CHANGE VEHICLE', 'SETTINGS', 'RESTART'];
     ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
+    const startY = h / 2 - 32;
     for (let k = 0; k < items.length; k++) {
-      const y = h / 2 + k * 34;
+      const y = startY + k * 34;
       const sel = menu ? k === menu.index : k === 0;
       ctx.fillStyle = sel ? '#f0e6d8' : 'rgba(201,184,165,0.7)';
       ctx.fillText(items[k], w / 2 + 14, y);
       if (sel) {
         ctx.fillStyle = '#ffd54a';
-        ctx.fillText('▶', w / 2 - 96, y);
+        ctx.fillText('▶', w / 2 - 106, y);
       }
     }
+
+    // Guide lines at bottom
     ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
-    ctx.fillStyle = 'rgba(240,230,216,0.55)';
-    ctx.fillText('UP / DOWN  choose    ENTER  select    ESC  back', w / 2, h / 2 + 16 + items.length * 34);
+    ctx.fillStyle = 'rgba(240,230,216,0.6)';
+    ctx.fillText('UP / DOWN  choose    ENTER  select    ESC  resume', w / 2, startY + items.length * 34 + 20);
+
+    // Controls guide badge bar
+    const barW = Math.min(680, w * 0.9);
+    const barH = 38;
+    const barX = (w - barW) / 2;
+    const barY = Math.max(startY + items.length * 34 + 44, h - 58);
+
+    ctx.fillStyle = 'rgba(28, 18, 24, 0.72)';
+    ctx.strokeStyle = 'rgba(184, 114, 79, 0.35)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(barX, barY, barW, barH, 6);
+    else ctx.rect(barX, barY, barW, barH);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#ffd54a';
+    ctx.textAlign = 'center';
+    ctx.fillText('CONTROLS:  WASD / ARROWS  drive    SPACE  handbrake / drift    C  look back    R  reset', w / 2, barY + 23);
   }
 
   _drawRaceSetup(menu) {

@@ -1548,7 +1548,7 @@ export class Car {
          like it was hovering in every static shot. */
       w.position.y = CAR.wheelR - CAR.rideHeight + this.susp[i];
       if (w.userData.front) w.rotation.y = -this.steer;
-      w.userData.spin.rotation.x = this.wheelSpin[i];
+      w.userData.spin.rotation.x = -this.wheelSpin[i];
     }
   }
 }

@@ -76,6 +76,10 @@ const HOUSES = 'abcdefghijklmnopqrstu'.split('').map(
 const LIGHTS = [
   '/assets/road/light-square.glb',
   '/assets/road/light-square-cross.glb',
+  '/assets/road/light-curved.glb',
+  '/assets/road/light-curved-double.glb',
+  '/assets/road/light-square-double.glb',
+  '/assets/road/light-curved-cross.glb',
 ];
 
 /* Per-model size boost for select metro buildings — these read small against
@@ -156,7 +160,7 @@ function nk(x, z) {
  * into larger empty super-cells (plazas, open superblocks, park blocks).
  * step = centreline spacing; width/lanes = ribbon size.
  */
-function addMergedGrid(g, step, radius, width, lanes, { ringMin = 0, occupiedCells = new Set(), mergedPlacements = [] } = {}) {
+function addMergedGrid(g, step, radius, width, lanes, { ringMin = 0, occupiedCells = new Set(), mergedPlacements = [], suppressCardinal = false } = {}) {
   const n = Math.floor(radius / step);
 
   const isValidCell = (i, j) => {
@@ -270,6 +274,7 @@ function addMergedGrid(g, step, radius, width, lanes, { ringMin = 0, occupiedCel
 
   /* Horizontal edges: connecting (i, j) to (i+1, j) */
   for (let j = -n; j <= n; j++) {
+    if (suppressCardinal && j === 0) continue; // Central East-West axis is reserved for Cardinal 4-lane Avenue
     for (let i = -n; i < n; i++) {
       if (suppressedH.has(hKey(i, j))) continue;
       if (isNodeValid(i, j) && isNodeValid(i + 1, j)) {
@@ -282,6 +287,7 @@ function addMergedGrid(g, step, radius, width, lanes, { ringMin = 0, occupiedCel
 
   /* Vertical edges: connecting (i, j) to (i, j+1) */
   for (let i = -n; i <= n; i++) {
+    if (suppressCardinal && i === 0) continue; // Central North-South axis is reserved for Cardinal 4-lane Avenue
     for (let j = -n; j < n; j++) {
       if (suppressedV.has(vKey(i, j))) continue;
       if (isNodeValid(i, j) && isNodeValid(i, j + 1)) {
@@ -419,6 +425,75 @@ function resolveAndConnectDeadEnds(g) {
 }
 
 /**
+ * Remove any duplicate or collinear overlapping road edges.
+ * If a narrower road lies inside a wider avenue, the narrower edge is eliminated.
+ */
+function cleanupOverlappingCollinearEdges(g) {
+  const byId = new Map(g.nodes.map(n => [n.id, n]));
+  const edgesToRemove = new Set();
+
+  for (let i = 0; i < g.edges.length; i++) {
+    if (edgesToRemove.has(i)) continue;
+    const e1 = g.edges[i];
+    const a1 = byId.get(e1.a), b1 = byId.get(e1.b);
+    if (!a1 || !b1) continue;
+
+    const dx1 = b1.x - a1.x, dz1 = b1.z - a1.z;
+    const len1 = Math.hypot(dx1, dz1);
+    if (len1 < 0.1) continue;
+    const tx1 = dx1 / len1, tz1 = dz1 / len1;
+
+    for (let j = i + 1; j < g.edges.length; j++) {
+      if (edgesToRemove.has(j)) continue;
+      const e2 = g.edges[j];
+      const a2 = byId.get(e2.a), b2 = byId.get(e2.b);
+      if (!a2 || !b2) continue;
+
+      const dx2 = b2.x - a2.x, dz2 = b2.z - a2.z;
+      const len2 = Math.hypot(dx2, dz2);
+      if (len2 < 0.1) continue;
+      const tx2 = dx2 / len2, tz2 = dz2 / len2;
+
+      const dot = Math.abs(tx1 * tx2 + tz1 * tz2);
+      if (dot > 0.99) {
+        const latA = Math.abs((a2.x - a1.x) * (-tz1) + (a2.z - a1.z) * tx1);
+        const latB = Math.abs((b2.x - a1.x) * (-tz1) + (b2.z - a1.z) * tx1);
+        if (latA < 1.0 && latB < 1.0) {
+          const uA = (a2.x - a1.x) * tx1 + (a2.z - a1.z) * tz1;
+          const uB = (b2.x - a1.x) * tx1 + (b2.z - a1.z) * tz1;
+          const minU = Math.min(uA, uB), maxU = Math.max(uA, uB);
+          if (maxU > 0.2 && minU < len1 - 0.2) {
+            if (e1.width >= e2.width) {
+              edgesToRemove.add(j);
+            } else {
+              edgesToRemove.add(i);
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (edgesToRemove.size > 0) {
+    g.edges = g.edges.filter((_, idx) => !edgesToRemove.has(idx));
+    g.degree.clear();
+    g.nodeWidth.clear();
+    for (const n of g.nodes) {
+      g.degree.set(n.id, 0);
+      g.nodeWidth.set(n.id, 0);
+    }
+    for (const e of g.edges) {
+      g.degree.set(e.a, (g.degree.get(e.a) || 0) + 1);
+      g.degree.set(e.b, (g.degree.get(e.b) || 0) + 1);
+      g.nodeWidth.set(e.a, Math.max(g.nodeWidth.get(e.a) || 0, e.width));
+      g.nodeWidth.set(e.b, Math.max(g.nodeWidth.get(e.b) || 0, e.width));
+    }
+    g.nodes = g.nodes.filter(n => (g.degree.get(n.id) || 0) > 0);
+  }
+}
+
+/**
  * Full city plan: road graph + building/fence placements + colliders.
  */
 export function planCity(seed = CITY_SEED) {
@@ -478,25 +553,36 @@ export function planCity(seed = CITY_SEED) {
     ringMin: METRO_R + 8,
     occupiedCells: resOccupied,
     mergedPlacements: resMerged,
+    suppressCardinal: true,
   });
 
-  /* ---- Cardinal Main Avenues (Orthogonal only: East, North, West, South) ---- */
-  /* Remove 4 diagonal corner tilt roads so all city avenues are strictly orthogonal */
+  /* ---- Cardinal Main Avenues (Continuous 4-lane / 2-lane straight avenues to coast) ---- */
   const CARDINAL_ANGLES = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2];
   for (const ang of CARDINAL_ANGLES) {
-    const pts = [];
-    for (let r = METRO_R - METRO_STEP; r <= RESIDENTIAL_R + 10; r += 14) {
-      pts.push({
-        x: CENTER.x + Math.cos(ang) * r,
-        z: CENTER.z + Math.sin(ang) * r,
-      });
+    const dirX = Math.cos(ang), dirZ = Math.sin(ang);
+    const rSet = new Set([0]);
+
+    // Add radial stations corresponding to metro and residential cross-streets
+    for (let r = METRO_STEP; r <= METRO_R; r += METRO_STEP) rSet.add(r);
+    for (let r = METRO_R + RES_STEP; r <= RESIDENTIAL_R; r += RES_STEP) rSet.add(r);
+
+    // Continue radial avenue straight past residential out toward the coast
+    for (let r = RESIDENTIAL_R + RES_STEP; r < ISLAND_R; r += RES_STEP) {
+      const x = CENTER.x + dirX * r, z = CENTER.z + dirZ * r;
+      const c = coastAt(x, z);
+      if (c.rr > c.beachStart - 12) break;
+      if (heightAt(x, z) > WATER_LEVEL + 11) break;
+      rSet.add(r);
     }
+
+    const sortedR = Array.from(rSet).sort((a, b) => a - b);
     let prev = null;
-    for (const p of pts) {
-      if (heightAt(p.x, p.z) < WATER_LEVEL + 0.5) { prev = null; continue; }
-      const id = addNode(g, p.x, p.z, nk(p.x, p.z));
+    for (const r of sortedR) {
+      const px = CENTER.x + dirX * r;
+      const pz = CENTER.z + dirZ * r;
+      if (heightAt(px, pz) < WATER_LEVEL + 0.5) { prev = null; continue; }
+      const id = addNode(g, px, pz, nk(px, pz));
       if (prev != null) {
-        /* Maintain consistent 2-lane 14m wide avenue along cardinal axes */
         addEdge(g, prev, id, LANE2_W, 2);
       }
       prev = id;
@@ -532,38 +618,40 @@ export function planCity(seed = CITY_SEED) {
     addEdge(g, ia, ib, LANE1_W, 1);
   }
 
-  /* Coast ↔ residential feeders: strictly orthogonal cardinal connections to coast */
+  /* Connect each Cardinal Main Avenue directly to the nearest coast ring road node */
   for (const ang of CARDINAL_ANGLES) {
     const dirX = Math.cos(ang), dirZ = Math.sin(ang);
-    let start = null, best = Infinity;
-    for (const rn of g.nodes) {
-      const d = Math.hypot(
-        rn.x - (CENTER.x + dirX * RESIDENTIAL_R),
-        rn.z - (CENTER.z + dirZ * RESIDENTIAL_R),
-      );
-      if (d < best) { best = d; start = rn; }
+    let avenueEnd = null, maxR = -1;
+    for (const n of g.nodes) {
+      const dX = n.x - CENTER.x, dZ = n.z - CENTER.z;
+      const r = dX * dirX + dZ * dirZ;
+      const lat = Math.abs(dX * (-dirZ) + dZ * dirX);
+      if (lat < 1.0 && r > maxR && r < ISLAND_R) {
+        maxR = r;
+        avenueEnd = n;
+      }
     }
-    if (!start) continue;
-    const pts = [];
-    for (let r = RESIDENTIAL_R + 14; r < ISLAND_R; r += 14) {
-      const x = CENTER.x + dirX * r;
-      const z = CENTER.z + dirZ * r;
-      const c = coastAt(x, z);
-      if (c.rr > c.beachStart - 14) break;
-      if (heightAt(x, z) > WATER_LEVEL + 11) break;
-      pts.push({ x, z });
+    if (!avenueEnd) continue;
+
+    let nearestCoast = null, bestD = Infinity;
+    for (const cp of coastPts) {
+      const d = Math.hypot(cp.x - avenueEnd.x, cp.z - avenueEnd.z);
+      if (d < bestD && d < 65) {
+        bestD = d;
+        nearestCoast = cp;
+      }
     }
-    if (pts.length < 2) continue;
-    let prev = start.id;
-    for (const p of pts) {
-      const id = addNode(g, p.x, p.z, nk(p.x, p.z));
-      addEdge(g, prev, id, LANE1_W, 1);
-      prev = id;
+    if (nearestCoast) {
+      const cId = addNode(g, nearestCoast.x, nearestCoast.z, nk(nearestCoast.x, nearestCoast.z));
+      addEdge(g, avenueEnd.id, cId, LANE2_W, 2);
     }
   }
 
   /* ---- 3. Eliminate dead ends: force L-joinings and prune stubs ------- */
   resolveAndConnectDeadEnds(g);
+
+  /* ---- 4. Clean up any remaining overlapping / collinear edges -------- */
+  cleanupOverlappingCollinearEdges(g);
 
   /* ---- Metro building placements -------------------------------------- */
   for (const b of metroBuildings) {
@@ -608,19 +696,150 @@ export function planCity(seed = CITY_SEED) {
     addCollider(colliders, x, z, sc * MODEL_SPAN * 0.38, 'building');
   }
 
-  /* Street lights at high-degree junctions (metro), sitting on the footpath
-     corner diagonally off the intersection — kerb + halfway out the slab. */
+  /* ---- Street lights along footpaths ----------------------------------- */
+  const LIGHT_SC = HOUSE_SCALE * 1.15;
+  const LIGHT_SINGLE = [
+    '/assets/road/light-curved.glb',
+    '/assets/road/light-square.glb',
+  ];
+  const LIGHT_DOUBLE = [
+    '/assets/road/light-curved-double.glb',
+    '/assets/road/light-square-double.glb',
+  ];
+  const LIGHT_CROSS = [
+    '/assets/road/light-curved-cross.glb',
+    '/assets/road/light-square-cross.glb',
+  ];
+
+  const byId = new Map(g.nodes.map(n => [n.id, n]));
+  const seenLightSpots = new Set();
+  const lightKey = (x, z) => `${Math.round(x)},${Math.round(z)}`;
+
+  /* Map node to incident edges for lane determination */
+  const nodeEdges = new Map();
+  for (const e of g.edges) {
+    if (!nodeEdges.has(e.a)) nodeEdges.set(e.a, []);
+    nodeEdges.get(e.a).push(e);
+    if (!nodeEdges.has(e.b)) nodeEdges.set(e.b, []);
+    nodeEdges.get(e.b).push(e);
+  }
+
+  /* 1. Road slab lights (sparse and clean, ~1 light on 1-lane road, 2 on 2-lane road) */
+  for (const e of g.edges) {
+    const na = byId.get(e.a), nb = byId.get(e.b);
+    if (!na || !nb) continue;
+    const len = Math.hypot(nb.x - na.x, nb.z - na.z);
+    if (len < 32) continue;
+
+    const midX = (na.x + nb.x) * 0.5, midZ = (na.z + nb.z) * 0.5;
+    const rr = Math.hypot(midX - CENTER.x, midZ - CENTER.z);
+    if (rr > RESIDENTIAL_R + 10) continue;
+
+    // Filter to keep roads clean and uncluttered (like previous sparse distribution)
+    if (!R.chance(0.15)) continue;
+
+    const tx = (nb.x - na.x) / len, tz = (nb.z - na.z) / len;
+    const nx = -tz, nz = tx;
+    const width = e.width || 7;
+    const lanes = e.lanes || (width >= 12 ? 2 : 1);
+
+    // Footpath offset: placed squarely on the sidewalk slab
+    const footOffset = width * 0.5 + 0.45 + FOOT_W * 0.5;
+
+    if (lanes <= 1) {
+      // 1 on road slab in 1-lane road
+      const s = len * 0.5;
+      const lx = na.x + tx * s + nx * footOffset;
+      const lz = na.z + tz * s + nz * footOffset;
+      const kStr = lightKey(lx, lz);
+      if (!seenLightSpots.has(kStr)) {
+        seenLightSpots.add(kStr);
+        const yaw = Math.atan2(nx, nz); // Point inward over street
+        const model = R.pick(LIGHT_SINGLE);
+        const yAt = heightAt(lx, lz) + DECK;
+        addInst(placements, model, lx, lz, yaw, LIGHT_SC, LIGHT_SC, LIGHT_SC, 'light', yAt);
+      }
+    } else {
+      // 2 on road slab in 2-lane road (at 1/3 and 2/3 along road on alternating sides)
+      const stations = [
+        { s: len * 0.33, side: 1 },
+        { s: len * 0.67, side: -1 },
+      ];
+      for (const st of stations) {
+        const lx = na.x + tx * st.s + nx * (st.side * footOffset);
+        const lz = na.z + tz * st.s + nz * (st.side * footOffset);
+        const kStr = lightKey(lx, lz);
+        if (seenLightSpots.has(kStr)) continue;
+        seenLightSpots.add(kStr);
+
+        const yaw = Math.atan2(st.side * nx, st.side * nz);
+        const model = R.pick(LIGHT_DOUBLE);
+        const yAt = heightAt(lx, lz) + DECK;
+        addInst(placements, model, lx, lz, yaw, LIGHT_SC, LIGHT_SC, LIGHT_SC, 'light', yAt);
+      }
+    }
+  }
+
+  /* 2. Junction lights:
+        - 1 light in junction for 1-lane road
+        - 2 lights in junction for 2-lane road
+        - 1 with 4 lights (cross light) in junction for 4-lane road / 4-way major crossing */
   for (const n of g.nodes) {
     const deg = g.degree.get(n.id) || 0;
-    if (deg < 3) continue;
+    if (deg < 2) continue; // Skip dead ends
+
     const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
-    if (rr > METRO_R + 20) continue;
-    if (!R.chance(0.55)) continue;
-    const sc = HOUSE_SCALE * 1.2;
-    const light = R.pick(LIGHTS);
-    const half = (g.nodeWidth.get(n.id) || 0) * 0.5;
+    if (rr > RESIDENTIAL_R + 10) continue;
+
+    // Filter to keep junctions clean without overcrowding
+    if (!R.chance(0.20)) continue;
+
+    const incEdges = nodeEdges.get(n.id) || [];
+    const maxLanes = Math.max(1, ...incEdges.map(e => e.lanes || (e.width >= 12 ? 2 : 1)));
+    const is4LaneJunction = maxLanes >= 4 || (deg >= 4 && maxLanes >= 2);
+
+    const half = (g.nodeWidth.get(n.id) || 7) * 0.5;
     const d = half + 0.45 + FOOT_W * 0.5;
-    addInst(placements, light, n.x + d, n.z + d, 0, sc, sc, sc, 'light');
+
+    if (is4LaneJunction) {
+      // 1 with 4 lights in junction in 4-lane road
+      const lx = n.x + d, lz = n.z + d;
+      const kStr = lightKey(lx, lz);
+      if (!seenLightSpots.has(kStr)) {
+        seenLightSpots.add(kStr);
+        const model = R.pick(LIGHT_CROSS);
+        const yAt = heightAt(lx, lz) + DECK;
+        addInst(placements, model, lx, lz, 0, LIGHT_SC, LIGHT_SC, LIGHT_SC, 'light', yAt);
+      }
+    } else if (maxLanes === 2) {
+      // 2 lights in junction in 2-lane road
+      const corners = [
+        [d, d],
+        [-d, -d],
+      ];
+      for (const [cx, cz] of corners) {
+        const lx = n.x + cx, lz = n.z + cz;
+        const kStr = lightKey(lx, lz);
+        if (seenLightSpots.has(kStr)) continue;
+        seenLightSpots.add(kStr);
+
+        const yaw = Math.atan2(cx, cz); // Diagonally inward toward intersection
+        const model = R.pick(LIGHT_DOUBLE);
+        const yAt = heightAt(lx, lz) + DECK;
+        addInst(placements, model, lx, lz, yaw, LIGHT_SC, LIGHT_SC, LIGHT_SC, 'light', yAt);
+      }
+    } else {
+      // 1 light in junction in 1-lane road
+      const lx = n.x + d, lz = n.z + d;
+      const kStr = lightKey(lx, lz);
+      if (!seenLightSpots.has(kStr)) {
+        seenLightSpots.add(kStr);
+        const yaw = Math.atan2(d, d); // Diagonally inward toward intersection
+        const model = R.pick(LIGHT_SINGLE);
+        const yAt = heightAt(lx, lz) + DECK;
+        addInst(placements, model, lx, lz, yaw, LIGHT_SC, LIGHT_SC, LIGHT_SC, 'light', yAt);
+      }
+    }
   }
 
   /* ---- Wild houses: beach cottages -------------------------------------- */

@@ -1,11 +1,12 @@
 # Opencity
 
 
-Like characters random car running on road going any way 5 cars in radius and my vehecle can go through them, use same physics of cpu vehecles in race, use same physics as my vehecle also add the no of vehecles in radius in settings, also this vehecle will not seen during the race like pedestrians.
 
 
 Optamization in the characters where we have points but when camera see the characters and vehecle points to generate will generate else not. Also do same optamization with assets like buildings, trees, and other objects.
 
-On esc menu we get the guides for controls.
 
-Pedestrians vehecle won't get off road or out side the road, if they do then return back to the road. Every vehecle would wait for 10 sec in every plus and t shaped road junctions, also if something infont of the vehecle will stop suddely and wait for 10 sec before continuing.
+CPU vehecles will wiped out or hide while runnning in race and pedestrians fix it, no consistent pattern. cpu vehecles stops when come something infront of it - make it when vehecle mesh come infront will stop for 5 seconds.
+
+
+Add day night cycle where in night have moon- white light and making shadow accordingly, shadow also move according to sun then we got orange enviorments in end and beginning of day and then night cycle. Street light will lit up and give light in night cycle.
