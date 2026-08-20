@@ -88,6 +88,9 @@ export async function buildCityMeshes(placements, onProgress) {
 
   const dummy = new THREE.Object3D();
   const cache = new Map(); // url → { geo, map }
+  const lightMats = [];
+  let lightPoolMesh = null;
+  let lightPoolMat = null;
 
   await Promise.all(urls.map(async (url) => {
     const items = byUrl.get(url);
@@ -140,6 +143,7 @@ export async function buildCityMeshes(placements, onProgress) {
       done++; bump();
     }
 
+    const isLight = items[0].kind === 'light' || url.includes('light');
     const mat = celMaterial({
       map: proto.map || undefined,
       color: proto.map ? 0xffffff : 0x888888,
@@ -148,6 +152,12 @@ export async function buildCityMeshes(placements, onProgress) {
     mat.opacity = 1;
     mat.depthWrite = true;
     if (proto.map) mat.alphaTest = 0.45;
+
+    if (isLight) {
+      mat.emissive = new THREE.Color(0x000000);
+      mat.emissiveIntensity = 0.0;
+      lightMats.push(mat);
+    }
 
     const mesh = new THREE.InstancedMesh(proto.geo, mat, items.length);
     mesh.name = `city-${url.split('/').pop()}`;
@@ -168,6 +178,63 @@ export async function buildCityMeshes(placements, onProgress) {
     mesh.computeBoundingSphere();
     root.add(mesh);
   }));
+
+  /* Batched ground illumination pools beneath street light lamp heads */
+  const lightPlacements = placements.filter(p => p.kind === 'light');
+  if (lightPlacements.length > 0) {
+    const poolGeo = new THREE.PlaneGeometry(34.0, 34.0);
+    poolGeo.rotateX(-Math.PI * 0.5); // flat on ground plane
+
+    const poolCanvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
+    let poolTex = null;
+    if (poolCanvas) {
+      poolCanvas.width = 128;
+      poolCanvas.height = 128;
+      const ctx = poolCanvas.getContext('2d');
+      const grad = ctx.createRadialGradient(64, 64, 2, 64, 64, 62);
+      grad.addColorStop(0, 'rgba(255, 255, 255, 0.40)');
+      grad.addColorStop(0.30, 'rgba(240, 248, 255, 0.22)');
+      grad.addColorStop(0.60, 'rgba(215, 235, 255, 0.08)');
+      grad.addColorStop(1, 'rgba(200, 225, 255, 0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 128, 128);
+      poolTex = new THREE.CanvasTexture(poolCanvas);
+      poolTex.colorSpace = THREE.SRGBColorSpace;
+    }
+
+    const poolMat = new THREE.MeshBasicMaterial({
+      map: poolTex,
+      transparent: true,
+      opacity: 0.0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+
+    const poolMesh = new THREE.InstancedMesh(poolGeo, poolMat, lightPlacements.length);
+    poolMesh.name = 'street-light-pools';
+    poolMesh.renderOrder = 4;
+    poolMesh.visible = false;
+
+    for (let i = 0; i < lightPlacements.length; i++) {
+      const lp = lightPlacements[i];
+      const yaw = lp.yaw || 0;
+      // Inward offset of lamp head from pole
+      const offX = -Math.sin(yaw) * 1.8;
+      const offZ = -Math.cos(yaw) * 1.8;
+      dummy.position.set(lp.x + offX, lp.y + 0.03, lp.z + offZ);
+      dummy.rotation.set(0, yaw, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      poolMesh.setMatrixAt(i, dummy.matrix);
+    }
+    poolMesh.instanceMatrix.needsUpdate = true;
+    poolMesh.computeBoundingSphere();
+    root.add(poolMesh);
+
+    lightPoolMesh = poolMesh;
+    lightPoolMat = poolMat;
+  }
 
   /* Grey podiums under metro buildings — one per city square, level with
      the footpath (a lighter warm grey than the road's cool concrete). */
@@ -194,6 +261,21 @@ export async function buildCityMeshes(placements, onProgress) {
     pm.computeBoundingSphere();
     root.add(pm);
   }
+
+  /** Dynamic night-time illumination update */
+  root.updateCityLighting = (nightFactor) => {
+    const f = Math.max(0, Math.min(1, nightFactor));
+    for (const lm of lightMats) {
+      if (lm.emissive) {
+        lm.emissive.setHex(0xffffff);
+        lm.emissiveIntensity = f * 1.3;
+      }
+    }
+    if (lightPoolMat && lightPoolMesh) {
+      lightPoolMat.opacity = f * 0.38;
+      lightPoolMesh.visible = f > 0.02;
+    }
+  };
 
   return root;
 }

@@ -36,6 +36,12 @@ An open-world, cel-shaded arcade driving game and city simulation built in vanil
   - Dynamic shadow mapping, procedural tire skid marks, tire smoke/dust particles, and high-speed wind streaks.
   - Scalable performance settings: Resolution (0.5x-1.0x), Draw Distance (250m-1km), Shadows (Off-High), Pedestrian and Traffic counts.
 
+- **Dynamic Day, Sunset and Night Cycle**:
+  - 24-hour celestial orbit with moving Sun and Moon shadows across the city and island.
+  - Dynamic atmospheric transitions: sky-blue daytime, vibrant golden/orange sunset, twilight violet, and midnight blue with cool white moonlight.
+  - Street lights automatically illuminate at sunset/night with crisp white glowing lamp heads, ground illumination pools, and real-time shadow casting spotlight on vehicles and pedestrians.
+  - Customizable in Settings: Dynamic (1m, 3m, 8m cycles), Always Day, Always Sunset, Always Night, and Always Dawn.
+
 - **100% Procedural Web Audio Engine**:
   - Zero external MP3/WAV audio files - all audio is synthesized in real time via Web Audio API.
   - Multi-harmonic granular engine roar with throttle load resonance and turbo blow-off whine.

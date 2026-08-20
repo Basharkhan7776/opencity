@@ -289,11 +289,6 @@ export function buildCarFromGLTF(gltf) {
     }
   });
 
-  /* A model swap is not a drop-in: the GLB vehicles sit at roughly half the
-     physics platform's scale, with their wheelbase wherever their author put
-     it. Measure the model's own wheelbase and scale body and wheels so the
-     wheelbase matches CAR, leaving the hubs alone — the physics repositions
-     them from CAR.track / CAR.wheelBase every frame (see Car.applyTo). */
   const wp = key => {
     const w = wheelNodes[key];
     return w ? w.getWorldPosition(new THREE.Vector3()) : null;
@@ -302,10 +297,7 @@ export function buildCarFromGLTF(gltf) {
   const bz = ((wp('wheel-back-left')?.z || 0) + (wp('wheel-back-right')?.z || 0)) / 2;
   const bakedWheelbase = Math.abs(fz - bz) || 1;
   const k = CAR.wheelBase / bakedWheelbase;
-  /* Keep the model's own lateral stance: the mean of the four wheels'
-     distances from the centreline, scaled like everything else, so each
-     vehicle in the fleet runs a different track width instead of all four
-     tyres being forced onto CAR.track. */
+
   const bakedHalfTrack = (() => {
     let s = 0, n = 0;
     for (const key of Object.keys(wheelNodes)) {
@@ -314,11 +306,8 @@ export function buildCarFromGLTF(gltf) {
     }
     return n ? s / n : 0;
   })();
-  /* TRACK_GAIN controls lateral stance width: lowered to 1.25 so wheels sit snugly and flush */
   const TRACK_GAIN = 1.25;
 
-  /* Detach the wheels before scaling the body, so a model that nests its
-     wheels under the body node is not scaled twice. */
   for (const key of Object.keys(wheelNodes)) {
     if (wheelNodes[key]) wheelNodes[key].removeFromParent();
   }
@@ -326,19 +315,8 @@ export function buildCarFromGLTF(gltf) {
 
   const shellWrap = new THREE.Group();
   if (bodyNode) {
-    /* Lift the body so its underside sits at the same ride height as the
-       procedural car (local y −0.26), whatever the model's own stance. The
-       offset lives on a wrapper, not on `body`, because Car.applyTo writes
-       body.position.y for squash every frame. */
     const bottom = new THREE.Box3().setFromObject(bodyNode).min.y;
     shellWrap.position.y = -0.26 - bottom;
-    /* The asset pack bakes its vehicles nose-first toward +z, but the game's
-       root frame maps a body's +z to the backward direction of travel (the
-       front axle lives at −wheelBase/2), and the instant the car is driven,
-       applyTo overwrites body.rotation (see Car.applyTo) — so the spin lives
-       here on the shell wrapper, which applyTo never touches. Models with
-       their front axle on the +z side of the rear axle get a half turn; only
-       a hypothetical nose-at-rear model is left alone. */
     if (fz > bz) shellWrap.rotation.y = Math.PI;
     shellWrap.add(bodyNode);
     bodyGroup.add(shellWrap);
@@ -369,14 +347,6 @@ export function buildCarFromGLTF(gltf) {
     if (rawWheel) {
       rawWheel.position.set(0, 0, 0);
       rawWheel.scale.multiplyScalar(k);
-      /* A wheel scaled by k is rarely exactly CAR.wheelR (the pack's range
-         here is 0.62–0.93 m), and the difference sinks the tyre through the
-         road or hovers it above it. The box is measured in the wheel's own
-         space (it is parentless here, so the offset needs no hub terms); the
-         hub rests at wheelR − rideHeight during physics, so for the tyre
-         bottom to land on the ground (rideHeight below the root) the spin
-         must sit at −box.min.y − wheelR. This holds whatever the wheel's
-         true radius or where its origin sits in the tyre. */
       rawWheel.rotation.y = Math.PI;
       const box = new THREE.Box3().setFromObject(rawWheel);
       spin.position.y = -box.min.y - CAR.wheelR;

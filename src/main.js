@@ -69,6 +69,18 @@ const GFX_SHADOW = {
   medium: { size: 2048, dist: 38 },
   high: { size: 4096, dist: 46 },
 };
+
+const TIME_MODES = ['dynamic', 'dynamic_fast', 'dynamic_slow', 'day', 'sunset', 'night', 'dawn'];
+const TIME_MODE_LABELS = [
+  'DYNAMIC (3 MIN)',
+  'DYNAMIC (1 MIN)',
+  'DYNAMIC (8 MIN)',
+  'ALWAYS DAY',
+  'ALWAYS SUNSET',
+  'ALWAYS NIGHT',
+  'ALWAYS DAWN',
+];
+
 const GFX_KEY = 'opencity.gfx';
 
 /* Sphere of visibility, centred on the player's vehicle: world chunks whose
@@ -192,10 +204,10 @@ class Game {
     );
 
     this.buildCars();
-    /* Sun follows the car; aim it at the island centre for the first frame. */
-    this.sun.position.copy(this.player.pos).add(SUN_OFFSET);
-    this.sun.target.position.copy(this.player.pos);
-    this.sun.target.updateMatrixWorld();
+    this.timeOfDay = 0.25;
+    if (this.world?.updateEnvironment) {
+      this.world.updateEnvironment(this.timeOfDay, this.player.pos, this.scene);
+    }
 
     this.input = new Input();
     this.chase = new ChaseCamera(this.camera);
@@ -416,6 +428,7 @@ class Game {
         if (this.pedestrians) this.pedestrians.update(dt, camX, camZ);
         if (this.traffic) this.traffic.update(dt, { pos: { x: camX, z: camZ } }, this.pedestrians);
       }
+      this._updateDayNight(dt);
       return;
     }
 
@@ -468,10 +481,8 @@ class Game {
       orbitPitch: this.lookPitch,
     });
 
-    /* Keep the sun's shadow frustum over the car. */
-    this.sun.position.copy(p.pos).add(SUN_OFFSET);
-    this.sun.target.position.copy(p.pos);
-    this.sun.target.updateMatrixWorld();
+    /* Celestial orbit (Sun / Moon) and shadow tracking */
+    this._updateDayNight(dt);
 
     this.audio.update(dt, {
       speed: p.speed,
@@ -650,7 +661,7 @@ class Game {
     const m = this.menu;
     const i = this.input;
     const g = this.gfx;
-    const rows = 5;
+    const rows = 6;
     if (i.menuUpPressed) m.index = (m.index + rows - 1) % rows;
     else if (i.menuDownPressed) m.index = (m.index + 1) % rows;
     else if (i.menuLeftPressed || i.menuRightPressed) {
@@ -665,6 +676,8 @@ class Game {
         g.trafficIdx = (g.trafficIdx + dir + GFX_TRAFFIC.length) % GFX_TRAFFIC.length;
       } else if (m.index === 4) {
         g.shadowIdx = (g.shadowIdx + dir + GFX_SHADOWS.length) % GFX_SHADOWS.length;
+      } else if (m.index === 5) {
+        g.timeIdx = (g.timeIdx + dir + TIME_MODES.length) % TIME_MODES.length;
       }
       this._applyGfx({ preview: true });
     }
@@ -677,6 +690,7 @@ class Game {
       pedIdx: GFX_PEDS.indexOf(10) >= 0 ? GFX_PEDS.indexOf(10) : 2,
       trafficIdx: GFX_TRAFFIC.indexOf(5) >= 0 ? GFX_TRAFFIC.indexOf(5) : 2,
       shadowIdx: this.tier === 'low' ? 1 : this.tier === 'medium' ? 2 : 3,
+      timeIdx: 0,
     };
   }
 
@@ -705,6 +719,7 @@ class Game {
         pedIdx: this._gfxIdx(saved.pedIdx, GFX_PEDS.length, defaults.pedIdx),
         trafficIdx: this._gfxIdx(saved.trafficIdx, GFX_TRAFFIC.length, defaults.trafficIdx),
         shadowIdx: this._gfxIdx(saved.shadowIdx, GFX_SHADOWS.length, defaults.shadowIdx),
+        timeIdx: this._gfxIdx(saved.timeIdx, TIME_MODES.length, defaults.timeIdx),
       };
     } catch {
       return defaults;
@@ -713,6 +728,32 @@ class Game {
 
   _saveGfx() {
     try { localStorage.setItem(GFX_KEY, JSON.stringify(this.gfx)); } catch { /* private mode */ }
+  }
+
+  _updateDayNight(dt) {
+    const mode = TIME_MODES[this.gfx?.timeIdx ?? 0];
+    if (mode === 'dynamic') {
+      this.timeOfDay = ((this.timeOfDay + dt * (1 / 180)) % 1 + 1) % 1;
+    } else if (mode === 'dynamic_fast') {
+      this.timeOfDay = ((this.timeOfDay + dt * (1 / 60)) % 1 + 1) % 1;
+    } else if (mode === 'dynamic_slow') {
+      this.timeOfDay = ((this.timeOfDay + dt * (1 / 480)) % 1 + 1) % 1;
+    } else if (mode === 'day') {
+      this.timeOfDay = 0.30;
+    } else if (mode === 'sunset') {
+      this.timeOfDay = 0.50;
+    } else if (mode === 'night') {
+      this.timeOfDay = 0.75;
+    } else if (mode === 'dawn') {
+      this.timeOfDay = 0.08;
+    }
+
+    const focusPos = (this.fly && !this.race)
+      ? this.camera.position
+      : (this.player ? this.player.pos : null);
+    if (this.world?.updateEnvironment) {
+      this.world.updateEnvironment(this.timeOfDay, focusPos, this.scene);
+    }
   }
 
   _applyGfx({ persist = true, preview = false } = {}) {
@@ -1643,25 +1684,26 @@ class Hud {
 
   _drawSettings(menu) {
     const { ctx, w, h } = this;
-    const g = menu.gfx || { resIdx: 0, distIdx: 2, pedIdx: 2, trafficIdx: 2, shadowIdx: 3 };
+    const g = menu.gfx || { resIdx: 0, distIdx: 2, pedIdx: 2, trafficIdx: 2, shadowIdx: 3, timeIdx: 0 };
     const rows = [
       ['RESOLUTION', GFX_RES_LABELS[g.resIdx] || '1.0X'],
       ['DRAW DISTANCE', GFX_DIST_LABELS[g.distIdx] || '500 M'],
       ['PEDESTRIANS', String(GFX_PEDS[g.pedIdx] ?? 10)],
       ['TRAFFIC CARS', String(GFX_TRAFFIC[g.trafficIdx] ?? 5)],
       ['SHADOWS', GFX_SHADOW_LABELS[g.shadowIdx] || 'HIGH'],
+      ['TIME OF DAY', TIME_MODE_LABELS[g.timeIdx || 0] || 'DYNAMIC (3 MIN)'],
     ];
 
     ctx.font = '700 28px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = '#f0e6d8';
     ctx.shadowColor = 'rgba(20,10,14,0.9)';
     ctx.shadowBlur = 10;
-    ctx.fillText('SETTINGS', w / 2, h / 2 - 135);
+    ctx.fillText('SETTINGS', w / 2, h / 2 - 145);
     ctx.shadowBlur = 0;
 
     ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
     for (let k = 0; k < rows.length; k++) {
-      const y = h / 2 - 80 + k * 35;
+      const y = h / 2 - 95 + k * 35;
       const sel = k === menu.index;
       ctx.fillStyle = sel ? '#ffd54a' : 'rgba(201,184,165,0.8)';
       if (sel) ctx.fillText('▶', w / 2 - 220, y);

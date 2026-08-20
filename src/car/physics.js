@@ -224,6 +224,7 @@ export class Car {
     this.perf = {
       power: 1, drag: 1, grip: 1, steer: 1, susp: 1, drift: 1, ...perf,
     };
+    this.nightFactor = 0;
 
     this.pos = new THREE.Vector3();
     /* Where the car was one substep ago, and where it is drawn.
