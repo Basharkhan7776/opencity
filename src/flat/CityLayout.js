@@ -9,7 +9,7 @@
  * so every link is interconnected — no floating Kenney tile seams.
  */
 import { rng, rand } from '../core/rng.js';
-import { clamp } from '../core/util.js';
+import { clamp, lerp } from '../core/util.js';
 import {
   heightAt, normalAt, coastAt, mountainFactor, CENTER, WATER_LEVEL,
   METRO_R, RESIDENTIAL_R, ISLAND_R, PEAKS, inCity, COAST_ROAD_INSET,
@@ -262,7 +262,7 @@ function addMergedGrid(g, step, radius, width, lanes, { ringMin = 0, occupiedCel
     const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
     if (rr < ringMin || rr > radius) return false;
     if (heightAt(x, z) < WATER_LEVEL + 0.6) return false;
-    if (mountainFactor(x, z) > 0.62) return false;
+    if (mountainFactor(x, z) > 0.38 || heightAt(x, z) > 13) return false;
     return true;
   };
 
@@ -363,17 +363,16 @@ function resolveAndConnectDeadEnds(g) {
         const ddx = target.x - n.x;
         const ddz = target.z - n.z;
         const dist = Math.hypot(ddx, ddz);
-        if (dist < 5 || dist > 55) continue;
-
-        /* Must be axis-aligned (orthogonal along X or Z), no diagonal tilt */
-        const isAxisAligned = Math.abs(ddx) < 4 || Math.abs(ddz) < 4;
-        if (!isAxisAligned && dist > 18) continue;
+        /* Dead ends are resolved strictly within the city grid */
+        if (Math.hypot(n.x - CENTER.x, n.z - CENTER.z) > RESIDENTIAL_R + 5) continue;
+        if (Math.hypot(target.x - CENTER.x, target.z - CENTER.z) > RESIDENTIAL_R + 5) continue;
 
         /* Terrain validity check */
         const midX = (n.x + target.x) * 0.5;
         const midZ = (n.z + target.z) * 0.5;
         if (heightAt(midX, midZ) < WATER_LEVEL + 0.5) continue;
-        if (mountainFactor(midX, midZ) > 0.65) continue;
+        if (mountainFactor(midX, midZ) > 0.38) continue;
+        if (Math.abs(heightAt(n.x, n.z) - heightAt(target.x, target.z)) > 3.0) continue;
 
         const dirX = ddx / dist;
         const dirZ = ddz / dist;
@@ -552,28 +551,86 @@ export function planCity(seed = CITY_SEED) {
   addMergedGrid(g, RES_STEP, RESIDENTIAL_R, LANE1_W, 1, {
     ringMin: METRO_R + 8,
     occupiedCells: resOccupied,
-    mergedPlacements: resMerged,
+  mergedPlacements: resMerged,
     suppressCardinal: true,
   });
 
-  /* ---- Cardinal Main Avenues (Continuous 4-lane / 2-lane straight avenues to coast) ---- */
+  /* ---- 3. Eliminate dead ends on city grid: force L-joinings and prune stubs ------- */
+  resolveAndConnectDeadEnds(g);
+
+  /* ---- Cardinal Main Avenues (Continuous 4-lane straight avenues to coast) ---- */
   const CARDINAL_ANGLES = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2];
+  const cardinalCoastNodes = new Map();
+
+  /* ---- Coast 1-lane ring (connected loop) ----------------------------- */
+  const coastPts = [];
+  const TAU = Math.PI * 2;
+  const largePeak = PEAKS[1]; // 120m tallest snowy mountain
+  const peakAng = Math.atan2(largePeak.z - CENTER.z, largePeak.x - CENTER.x);
+
+  for (let a = 0; a < TAU; a += 0.045) {
+    let r = ISLAND_R * 0.78;
+    let x = CENTER.x, z = CENTER.z;
+    for (let it = 0; it < 20; it++) {
+      x = CENTER.x + Math.cos(a) * r;
+      z = CENTER.z + Math.sin(a) * r;
+      const c = coastAt(x, z);
+
+      // Baseline outer ring road at previous/original position
+      const baseTarget = c.beachStart - COAST_ROAD_INSET;
+
+      // C-shaped outward bypass on the large mountain side:
+      // Converged at the mountain flanks and diverged outward across the beach
+      const angDiff = Math.abs(Math.atan2(Math.sin(a - peakAng), Math.cos(a - peakAng)));
+      const bulge = angDiff < 0.65 ? Math.cos((angDiff / 0.65) * (Math.PI / 2)) ** 2 : 0;
+      const mountainBypassTarget = c.edge - 85;
+      const target = lerp(baseTarget, mountainBypassTarget, bulge);
+
+      r += (target - Math.hypot(x - CENTER.x, z - CENTER.z)) * 0.55;
+      r = clamp(r, 700, c.edge - 60);
+    }
+    x = CENTER.x + Math.cos(a) * r;
+    z = CENTER.z + Math.sin(a) * r;
+    if (heightAt(x, z) < WATER_LEVEL + 0.5) continue;
+    coastPts.push({ x, z });
+  }
+
+  // Snap the nearest coast ring road node for each cardinal direction onto the exact cardinal axis
   for (const ang of CARDINAL_ANGLES) {
     const dirX = Math.cos(ang), dirZ = Math.sin(ang);
-    const rSet = new Set([0]);
+    let bestPt = null, bestD = Infinity;
+    for (const cp of coastPts) {
+      const d = Math.hypot(cp.x - (CENTER.x + dirX * 800), cp.z - (CENTER.z + dirZ * 800));
+      if (d < bestD) { bestD = d; bestPt = cp; }
+    }
+    if (bestPt) {
+      const cRadius = Math.hypot(bestPt.x - CENTER.x, bestPt.z - CENTER.z);
+      bestPt.x = CENTER.x + dirX * cRadius;
+      bestPt.z = CENTER.z + dirZ * cRadius;
+      cardinalCoastNodes.set(ang, bestPt);
+    }
+  }
 
-    // Add radial stations corresponding to metro and residential cross-streets
+  if (coastPts.length > 4) {
+    addPolyline(g, coastPts, LANE1_W, 1);
+    const a = coastPts[coastPts.length - 1];
+    const b = coastPts[0];
+    const ia = addNode(g, a.x, a.z, nk(a.x, a.z));
+    const ib = addNode(g, b.x, b.z, nk(b.x, b.z));
+    addEdge(g, ia, ib, LANE1_W, 1);
+  }
+
+  // Build the 4 Cardinal Avenues straight from center out to the exact cardinal coast node
+  for (const ang of CARDINAL_ANGLES) {
+    const dirX = Math.cos(ang), dirZ = Math.sin(ang);
+    const coastNode = cardinalCoastNodes.get(ang);
+    const maxCoastR = coastNode ? Math.hypot(coastNode.x - CENTER.x, coastNode.z - CENTER.z) : 800;
+
+    const rSet = new Set([0]);
     for (let r = METRO_STEP; r <= METRO_R; r += METRO_STEP) rSet.add(r);
     for (let r = METRO_R + RES_STEP; r <= RESIDENTIAL_R; r += RES_STEP) rSet.add(r);
-
-    // Continue radial avenue straight past residential out toward the coast
-    for (let r = RESIDENTIAL_R + RES_STEP; r < ISLAND_R; r += RES_STEP) {
-      const x = CENTER.x + dirX * r, z = CENTER.z + dirZ * r;
-      const c = coastAt(x, z);
-      if (c.rr > c.beachStart - 12) break;
-      if (heightAt(x, z) > WATER_LEVEL + 11) break;
-      rSet.add(r);
-    }
+    for (let r = RESIDENTIAL_R + RES_STEP; r < maxCoastR - 20; r += RES_STEP) rSet.add(r);
+    rSet.add(maxCoastR);
 
     const sortedR = Array.from(rSet).sort((a, b) => a - b);
     let prev = null;
@@ -588,67 +645,6 @@ export function planCity(seed = CITY_SEED) {
       prev = id;
     }
   }
-
-  /* ---- Coast 1-lane ring (connected loop) ----------------------------- */
-  const coastPts = [];
-  const TAU = Math.PI * 2;
-  for (let a = 0; a < TAU; a += 0.045) {
-    let r = ISLAND_R * 0.78;
-    let x = CENTER.x, z = CENTER.z;
-    for (let it = 0; it < 20; it++) {
-      x = CENTER.x + Math.cos(a) * r;
-      z = CENTER.z + Math.sin(a) * r;
-      const c = coastAt(x, z);
-      const target = c.beachStart - COAST_ROAD_INSET;
-      r += (target - Math.hypot(x - CENTER.x, z - CENTER.z)) * 0.55;
-      r = clamp(r, 100, ISLAND_R * 0.97);
-    }
-    x = CENTER.x + Math.cos(a) * r;
-    z = CENTER.z + Math.sin(a) * r;
-    if (heightAt(x, z) < WATER_LEVEL + 0.5) continue;
-    if (mountainFactor(x, z) > 0.72) continue;
-    coastPts.push({ x, z });
-  }
-  if (coastPts.length > 4) {
-    addPolyline(g, coastPts, LANE1_W, 1);
-    const a = coastPts[coastPts.length - 1];
-    const b = coastPts[0];
-    const ia = addNode(g, a.x, a.z, nk(a.x, a.z));
-    const ib = addNode(g, b.x, b.z, nk(b.x, b.z));
-    addEdge(g, ia, ib, LANE1_W, 1);
-  }
-
-  /* Connect each Cardinal Main Avenue directly to the nearest coast ring road node */
-  for (const ang of CARDINAL_ANGLES) {
-    const dirX = Math.cos(ang), dirZ = Math.sin(ang);
-    let avenueEnd = null, maxR = -1;
-    for (const n of g.nodes) {
-      const dX = n.x - CENTER.x, dZ = n.z - CENTER.z;
-      const r = dX * dirX + dZ * dirZ;
-      const lat = Math.abs(dX * (-dirZ) + dZ * dirX);
-      if (lat < 1.0 && r > maxR && r < ISLAND_R) {
-        maxR = r;
-        avenueEnd = n;
-      }
-    }
-    if (!avenueEnd) continue;
-
-    let nearestCoast = null, bestD = Infinity;
-    for (const cp of coastPts) {
-      const d = Math.hypot(cp.x - avenueEnd.x, cp.z - avenueEnd.z);
-      if (d < bestD && d < 65) {
-        bestD = d;
-        nearestCoast = cp;
-      }
-    }
-    if (nearestCoast) {
-      const cId = addNode(g, nearestCoast.x, nearestCoast.z, nk(nearestCoast.x, nearestCoast.z));
-      addEdge(g, avenueEnd.id, cId, LANE2_W, 2);
-    }
-  }
-
-  /* ---- 3. Eliminate dead ends: force L-joinings and prune stubs ------- */
-  resolveAndConnectDeadEnds(g);
 
   /* ---- 4. Clean up any remaining overlapping / collinear edges -------- */
   cleanupOverlappingCollinearEdges(g);
@@ -724,19 +720,19 @@ export function planCity(seed = CITY_SEED) {
     nodeEdges.get(e.b).push(e);
   }
 
-  /* 1. Road slab lights (sparse and clean, ~1 light on 1-lane road, 2 on 2-lane road) */
+  /* 1. City Road slab lights (sparse in city grid) */
   for (const e of g.edges) {
     const na = byId.get(e.a), nb = byId.get(e.b);
     if (!na || !nb) continue;
     const len = Math.hypot(nb.x - na.x, nb.z - na.z);
-    if (len < 32) continue;
+    if (len < 20) continue;
 
     const midX = (na.x + nb.x) * 0.5, midZ = (na.z + nb.z) * 0.5;
     const rr = Math.hypot(midX - CENTER.x, midZ - CENTER.z);
-    if (rr > RESIDENTIAL_R + 10) continue;
+    if (rr > RESIDENTIAL_R + 10) continue; // Outer ring road & connection roads handled below
 
-    // Filter to keep roads clean and uncluttered (like previous sparse distribution)
-    if (!R.chance(0.15)) continue;
+    // Filter to keep city roads clean
+    if (!R.chance(0.18)) continue;
 
     const tx = (nb.x - na.x) / len, tz = (nb.z - na.z) / len;
     const nx = -tz, nz = tx;
@@ -780,7 +776,51 @@ export function planCity(seed = CITY_SEED) {
     }
   }
 
-  /* 2. Junction lights:
+  /* 2. Outer ring road street lights: placed on footpath every 100 meters */
+  if (coastPts && coastPts.length > 1) {
+    let distAccum = 50; // Staggered initial offset
+    for (let i = 0; i < coastPts.length; i++) {
+      const p0 = coastPts[i];
+      const p1 = coastPts[(i + 1) % coastPts.length];
+      const segLen = Math.hypot(p1.x - p0.x, p1.z - p0.z);
+      distAccum += segLen;
+      if (distAccum >= 100) {
+        distAccum -= 100;
+        const midX = (p0.x + p1.x) * 0.5, midZ = (p0.z + p1.z) * 0.5;
+        const tx = (p1.x - p0.x) / segLen, tz = (p1.z - p0.z) / segLen;
+        const nx = -tz, nz = tx;
+        const toCenterX = CENTER.x - midX, toCenterZ = CENTER.z - midZ;
+        const innerSide = (nx * toCenterX + nz * toCenterZ) > 0 ? 1 : -1;
+
+        // Placed squarely on the footpath: half road width + kerb + half footpath
+        const footOffset = LANE1_W * 0.5 + 0.45 + FOOT_W * 0.5;
+        const lx = midX + nx * (innerSide * footOffset);
+        const lz = midZ + nz * (innerSide * footOffset);
+        const yaw = Math.atan2(innerSide * nx, innerSide * nz);
+        const model = R.pick(LIGHT_SINGLE);
+        const yAt = heightAt(lx, lz) + DECK;
+        addInst(placements, model, lx, lz, yaw, LIGHT_SC, LIGHT_SC, LIGHT_SC, 'light', yAt);
+      }
+    }
+  }
+
+  /* 3. Connection road street lights: placed on footpath every 100 meters */
+  for (const ang of CARDINAL_ANGLES) {
+    const dirX = Math.cos(ang), dirZ = Math.sin(ang);
+    const nx = -dirZ, nz = dirX;
+    const footOffset = LANE2_W * 0.5 + 0.45 + FOOT_W * 0.5;
+    for (let r = RESIDENTIAL_R + 75; r <= 760; r += 100) {
+      const ax = CENTER.x + dirX * r, az = CENTER.z + dirZ * r;
+      const lx = ax + nx * footOffset;
+      const lz = az + nz * footOffset;
+      const yaw = Math.atan2(nx, nz);
+      const model = R.pick(LIGHT_SINGLE);
+      const yAt = heightAt(lx, lz) + DECK;
+      addInst(placements, model, lx, lz, yaw, LIGHT_SC, LIGHT_SC, LIGHT_SC, 'light', yAt);
+    }
+  }
+
+  /* 4. City Junction lights:
         - 1 light in junction for 1-lane road
         - 2 lights in junction for 2-lane road
         - 1 with 4 lights (cross light) in junction for 4-lane road / 4-way major crossing */
@@ -789,10 +829,8 @@ export function planCity(seed = CITY_SEED) {
     if (deg < 2) continue; // Skip dead ends
 
     const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
-    if (rr > RESIDENTIAL_R + 10) continue;
-
-    // Filter to keep junctions clean without overcrowding
-    if (!R.chance(0.20)) continue;
+    if (rr > RESIDENTIAL_R + 10) continue; // Skip outer junctions
+    if (!R.chance(0.18)) continue;
 
     const incEdges = nodeEdges.get(n.id) || [];
     const maxLanes = Math.max(1, ...incEdges.map(e => e.lanes || (e.width >= 12 ? 2 : 1)));

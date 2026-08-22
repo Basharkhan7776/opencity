@@ -45,7 +45,14 @@ export class FlatTrack {
        raised road decks, so the car drives on the road mesh itself. */
     this.roadLift = null;
     this.heightAt = (x, z) => heightAt(x, z) + (this.roadLift ? this.roadLift(x, z) : 0);
-    this.normalAt = normalAt;
+    this.normalAt = (x, z, out = new THREE.Vector3()) => {
+      const e = 0.85;
+      const hL = this.heightAt(x - e, z);
+      const hR = this.heightAt(x + e, z);
+      const hD = this.heightAt(x, z - e);
+      const hU = this.heightAt(x, z + e);
+      return out.set(hL - hR, 2 * e, hD - hU).normalize();
+    };
     this.waterLevel = WATER_LEVEL;
     this.center = CENTER;
     this.plazaHalf = PLAZA_HALF;

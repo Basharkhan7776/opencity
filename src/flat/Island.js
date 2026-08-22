@@ -82,8 +82,8 @@ export const MESH_SCALE = 5;
  */
 export function cityFlatten(x, z) {
   const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
-  /* Solid plateau through residential; soft skirt so mountains still rise. */
-  return 1 - smoothstep(RESIDENTIAL_R * 0.88, RESIDENTIAL_R * 1.12, rr);
+  /* Solid plateau through residential; soft skirt so mountains still rise smoothly. */
+  return 1 - smoothstep(RESIDENTIAL_R * 0.92, RESIDENTIAL_R * 1.18, rr);
 }
 
 /** True when a point is inside the built city (for vegetation skip, etc.). */
@@ -331,6 +331,8 @@ function makeGrassGrainMap(size = 256) {
  * How "mountainous" a point is (0..1) — used to place rocks / high trees.
  */
 export function mountainFactor(x, z) {
+  const rr = Math.hypot(x - CENTER.x, z - CENTER.z);
+  if (rr > 740) return 0;
   let m = 0;
   for (const p of PEAKS) {
     const d = Math.hypot(x - p.x, z - p.z);
@@ -346,7 +348,7 @@ export function mountainFactor(x, z) {
  *
  * @returns {{land: THREE.Mesh, water: THREE.Mesh}}
  */
-export function buildIslandMeshes({ segments = 220 } = {}) {
+export function buildIslandMeshes({ segments = 220, roadLift = null } = {}) {
   /* Slightly larger than the island so warped shoreline verts (edge +
      coastWarp) never fall off the mesh. */
   const size = (ISLAND_R + 80) * 2;
@@ -359,7 +361,11 @@ export function buildIslandMeshes({ segments = 220 } = {}) {
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i) + CENTER.x;
     const z = pos.getZ(i) + CENTER.z;
-    const y = heightAt(x, z);
+    let y = heightAt(x, z);
+    /* Depress land mesh beneath road surfaces so grass/sand never pokes above the road deck */
+    if (roadLift && roadLift(x, z) > 0) {
+      y -= 0.10;
+    }
     pos.setXYZ(i, x, y, z);
     landColorAt(x, z, c);
     cols[i * 3] = c.r;

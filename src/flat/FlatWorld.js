@@ -87,17 +87,20 @@ export function buildFlatWorld({ shadowSize = 4096, shadowDist = 46 } = {}) {
   const root = new THREE.Group();
   root.name = 'flatworld';
 
-  const { land, water } = buildIslandMeshes();
-  root.add(land);
-  root.add(water);
-
   /* City plan first (roads + buildings). Continuous roads are sync meshes. */
   const city = createCitySystem();
   let roadLift = null;
   if (city.graph) {
+    roadLift = buildRoadLift(city.graph, city.placements);
+  }
+
+  const { land, water } = buildIslandMeshes({ roadLift });
+  root.add(land);
+  root.add(water);
+
+  if (city.graph) {
     const roads = buildRoadNetworkMesh(city.graph);
     root.add(roads.root);
-    roadLift = buildRoadLift(city.graph, city.placements);
   }
 
   const vegetation = createVegetationSystem(city.graph);

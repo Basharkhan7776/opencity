@@ -20,8 +20,8 @@ const MARK_COL = 0xe8e2d4;      /* warm asphalt paint */
 const SHOULDER_COL = 0x6a635b;  /* kerb / verge stone */
 const FOOT_COL = 0x9a9a9e;      /* concrete footpath grey */
 export const FOOT_W = 2;        /* footpath width on each side of the kerb (m) */
-export const DECK = 0.14;       /* deck top above the grass */
-const BASE = 0.3;               /* slab hangs this far below ground */
+export const DECK = 0.22;       /* deck top above the grass */
+const BASE = 2.5;               /* slab hangs this far below ground */
 const STEP = 6;                 /* station spacing along the centreline */
 /* Zebra crossings at junctions: longitudinal stripes along the road direction
    (vertical relative to the road/driver view) strictly on the asphalt deck,
@@ -245,10 +245,11 @@ function buildSlab(x0, z0, x1, z1, width, lanes, openA, openB) {
   for (let i = 0; i < n; i++) {
     const ux = x0 + dx * (i / (n - 1));
     const uz = z0 + dz * (i / (n - 1));
-    const g = heightAt(ux, uz);
     for (let s = 0; s < 9; s++) {
       const l = lats[s];
-      dp.push(ux + rx * l, g + DECK, uz + rz * l);
+      const px = ux + rx * l, pz = uz + rz * l;
+      const g = heightAt(px, pz);
+      dp.push(px, g + DECK, pz);
       const c = Math.abs(l) >= half + 0.45 ? foot
         : Math.abs(l) >= half - 0.01 ? kerb : road;
       dc.push(c.r, c.g, c.b);
@@ -258,6 +259,7 @@ function buildSlab(x0, z0, x1, z1, width, lanes, openA, openB) {
     for (const sgn of [-1, 1]) {
       const l = sgn * (half + 0.45 + FOOT_W);
       const px = ux + rx * l, pz = uz + rz * l;
+      const g = heightAt(px, pz);
       wp.push(px, g + DECK, pz);
       wp.push(px, g - BASE, pz);
       wc.push(foot.r, foot.g, foot.b, foot.r, foot.g, foot.b);
@@ -288,9 +290,12 @@ function buildSlab(x0, z0, x1, z1, width, lanes, openA, openB) {
       const pts = [], nrm = [];
       for (const u of [u0, u1]) {
         const cx = x0 + dx * u, cz = z0 + dz * u;
-        const gy = heightAt(cx, cz) + DECK + 0.02;
-        pts.push(cx + rx * (lc - dashW / 2), gy, cz + rz * (lc - dashW / 2));
-        pts.push(cx + rx * (lc + dashW / 2), gy, cz + rz * (lc + dashW / 2));
+        const p1x = cx + rx * (lc - dashW / 2), p1z = cz + rz * (lc - dashW / 2);
+        const p2x = cx + rx * (lc + dashW / 2), p2z = cz + rz * (lc + dashW / 2);
+        const gy1 = heightAt(p1x, p1z) + DECK + 0.02;
+        const gy2 = heightAt(p2x, p2z) + DECK + 0.02;
+        pts.push(p1x, gy1, p1z);
+        pts.push(p2x, gy2, p2z);
         nrm.push(0, 1, 0, 0, 1, 0);
       }
       marks.push({ positions: pts, normals: nrm, indices: [0, 1, 2, 1, 3, 2] });

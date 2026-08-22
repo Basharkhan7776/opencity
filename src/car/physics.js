@@ -1030,30 +1030,30 @@ export class Car {
       let nx = oldX + _d.x;
       let nz = oldZ + _d.z;
       let newGround = track.heightAt(nx, nz);
-      const budget = MAX_LIFT * dt;
-      /* Small steps — the 0.14 m road deck, kerbs, and footpaths up to 0.38 m —
-         are easily driveable: the tires roll over them, so the car can smoothly
-         mount the road from grass (ingress) and dismount onto grass (egress).
-         Only a rise steeper than a driveable kerb (a building wall, steep cliff)
-         clips the climb. */
-      const CURB = 0.38;
-      if (this.height <= 0.35 && newGround - oldGround > CURB) {
+      const stepDist = Math.hypot(_d.x, _d.z);
+      const diff = newGround - oldGround;
+      /* Max allowed vertical rise in one substep:
+         Allows smooth climbing over kerbs (0.14-0.38m), road ramps, and steep hills (up to ~55° grade).
+         Only extreme near-vertical barriers (diff > maxRise) clip the step. */
+      const maxRise = Math.max(0.55, stepDist * 1.5 + 24.0 * dt);
+      if (this.height <= 0.35 && diff > maxRise) {
         let lo = 0, hi = 1;
         for (let i = 0; i < 8; i++) {
           const mid = (lo + hi) * 0.5;
           const mx = oldX + _d.x * mid;
           const mz = oldZ + _d.z * mid;
-          if (track.heightAt(mx, mz) - oldGround > budget) hi = mid;
+          if (track.heightAt(mx, mz) - oldGround > maxRise) hi = mid;
           else lo = mid;
         }
         nx = oldX + _d.x * lo;
         nz = oldZ + _d.z * lo;
         newGround = track.heightAt(nx, nz);
         const blocked = 1 - lo;
-        if (blocked > 0.01) {
-          this.vx *= lerp(1, 0.82, clamp(blocked, 0, 1));
-          this.vy *= lerp(1, 0.82, clamp(blocked, 0, 1));
-          this.lastImpact = Math.max(this.lastImpact, clamp(blocked * 0.35, 0, 0.4));
+        if (blocked > 0.05) {
+          const slow = lerp(1, 0.70, clamp(blocked, 0, 1));
+          this.vx *= slow;
+          this.vy *= slow;
+          this.lastImpact = Math.max(this.lastImpact, clamp(blocked * 0.4, 0, 0.45));
         }
       }
       this.pos.x = nx;
@@ -1393,7 +1393,7 @@ export class Car {
       if (this.track.freeRoam && typeof this.track.heightAt === 'function') {
         const wx = this.pos.x + (front ? 1 : -1) * (CAR.wheelBase * 0.5) * this.forward.x + (left ? -1 : 1) * (CAR.track * 0.5) * this.right.x;
         const wz = this.pos.z + (front ? 1 : -1) * (CAR.wheelBase * 0.5) * this.forward.z + (left ? -1 : 1) * (CAR.track * 0.5) * this.right.z;
-        local = -(this.track.heightAt(wx, wz) - this.track.heightAt(this.pos.x, this.pos.z));
+        local = clamp(-(this.track.heightAt(wx, wz) - this.track.heightAt(this.pos.x, this.pos.z)), -0.25, 0.25);
       } else {
         const lat = this.lat + (left ? -1 : 1) * CAR.track * 0.5;
         const ds = (front ? -1 : 1) * CAR.wheelBase * 0.5;
