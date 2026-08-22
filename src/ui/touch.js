@@ -60,6 +60,7 @@ export class Touch {
     // Menu and Action edges
     this._tap = false;
     this._pausePressed = false;
+    this._mapPressed = false;
     this._menuUpPressed = false;
     this._menuDownPressed = false;
     this._menuLeftPressed = false;
@@ -162,6 +163,7 @@ export class Touch {
     const handbrakeBtn = { id: 'handbrake', x: right - hbW, y: bottom - gasH - 12 - hbH, w: hbW, h: hbH, label: 'P', kind: 'handbrake' };
 
     const pauseBtn = { id: 'pause', x: left, y: top, w: 52, h: 52, label: '⏸', kind: 'pause' };
+    const mapBtn = { id: 'map', x: left + 62, y: top, w: 52, h: 52, label: 'MAP', kind: 'map' };
 
     // --- Menu Controls ---
     const dpadSize = Math.max(54, Math.min(64, short * 0.16));
@@ -176,7 +178,7 @@ export class Touch {
     const menuBack = { id: 'back', x: right - actW, y: bottom - actH, w: actW, h: actH, label: 'BACK', kind: 'menu' };
 
     this.L = {
-      leftBtn, rightBtn, gasPedal, brakePedal, handbrakeBtn, pauseBtn,
+      leftBtn, rightBtn, gasPedal, brakePedal, handbrakeBtn, pauseBtn, mapBtn,
       menuUp, menuDown, menuLeft, menuRight, menuConfirm, menuBack,
     };
   }
@@ -205,6 +207,7 @@ export class Touch {
         else if (this._hit(L.menuBack, x, y)) { role = 'pause'; rect = L.menuBack; }
       } else {
         if (this._hit(L.pauseBtn, x, y)) { role = 'pause'; rect = L.pauseBtn; }
+        else if (this._hit(L.mapBtn, x, y)) { role = 'map'; rect = L.mapBtn; }
         else if (this._hit(L.leftBtn, x, y)) { role = 'left'; rect = L.leftBtn; }
         else if (this._hit(L.rightBtn, x, y)) { role = 'right'; rect = L.rightBtn; }
         else if (this._hit(L.gasPedal, x, y)) { role = 'throttle'; rect = L.gasPedal; }
@@ -218,6 +221,7 @@ export class Touch {
 
       // Trigger immediate edges on button press
       if (role === 'pause') this._pausePressed = true;
+      else if (role === 'map') this._mapPressed = true;
       else if (role === 'menuUp') this._menuUpPressed = true;
       else if (role === 'menuDown') this._menuDownPressed = true;
       else if (role === 'menuLeft') this._menuLeftPressed = true;
@@ -312,6 +316,12 @@ export class Touch {
   takePause() {
     const p = this._pausePressed;
     this._pausePressed = false;
+    return p;
+  }
+
+  takeMap() {
+    const p = this._mapPressed;
+    this._mapPressed = false;
     return p;
   }
 

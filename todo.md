@@ -13,13 +13,13 @@ fix the junction road foothpath upper part is not visible gray and visible in be
 
 pedestrians seem like translucent, increase its opacity.
 
-Add clouds sfx in the sky and also sun and moon with stars.
+Add clouds sfx in the sky and also sun and moon with stars at night.
 
 Fix the lands where roads touchs with mountains vehecle stuck in to the road problem is with the mesh and physics.
 
-Also in setting we can increase pedestrians and traffic density up to 100.
+Also in setting we can increase pedestrians and traffic density up to 50.
 
-Car should be in the direction of the road when race starts.
+dont generate vehecle infront of the player.
 
 On game press m to show the map, on race more will show the race track and opponent cars.
 

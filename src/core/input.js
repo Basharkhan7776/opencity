@@ -56,6 +56,7 @@ const KEYS = {
      binding with anything the car uses, so a pause can never be a driving
      input that arrived at the wrong moment. */
   pause: ['Escape'],
+  map: ['KeyM'],
   /* Menu navigation reuses the driving keys, which is not laziness: the hand
      is already on them, and they are only ever read while the simulation is
      stopped and the car cannot see them. */
@@ -309,6 +310,7 @@ export class Input {
     }
 
     const touchPause = touch?.takePause?.() || false;
+    const touchMap = touch?.takeMap?.() || false;
     const touchUp = touch?.takeMenuUp?.() || false;
     const touchDown = touch?.takeMenuDown?.() || false;
     const touchLeft = touch?.takeMenuLeft?.() || false;
@@ -320,6 +322,7 @@ export class Input {
        years. It used to be wired to the countdown's skip; pausing is the more
        valuable of the two and the countdown is three seconds long. */
     this.pausePressed = this.pressed('pause') || padEdge(PAD.start) || touchPause;
+    this.mapPressed = this.pressed('map') || touchMap;
     this.menuUpPressed = this.pressed('menuUp') || padEdge(PAD.dpadUp) || stick < 0 || touchUp;
     this.menuDownPressed = this.pressed('menuDown') || padEdge(PAD.dpadDown) || stick > 0 || touchDown;
     this.menuLeftPressed = this.pressed('menuLeft') || padEdge(PAD.dpadLeft) || stickX < 0 || touchLeft;

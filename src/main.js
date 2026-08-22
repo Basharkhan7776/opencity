@@ -64,8 +64,8 @@ const GFX_RES = [1, 0.9, 0.8, 0.7, 0.6, 0.5];
 const GFX_RES_LABELS = ['1.0X', '0.9X', '0.8X', '0.7X', '0.6X', '0.5X'];
 const GFX_DIST = [250, 350, 500, 750, 1000];
 const GFX_DIST_LABELS = ['250 M', '350 M', '500 M', '750 M', '1 KM'];
-const GFX_PEDS = [0, 5, 10, 15, 20];
-const GFX_TRAFFIC = [0, 3, 5, 8, 10];
+const GFX_PEDS = [0, 5, 10, 15, 20, 30, 40, 50];
+const GFX_TRAFFIC = [0, 3, 5, 10, 15, 25, 35, 50];
 const GFX_SHADOWS = ['off', 'low', 'medium', 'high'];
 const GFX_SHADOW_LABELS = ['OFF', 'LOW', 'MEDIUM', 'HIGH'];
 const GFX_SHADOW = {
@@ -304,6 +304,7 @@ class Game {
     this.hudOn = q.get('hud') !== '0';
 
     this.race = null;
+    this.showMap = false;
     this.ambientEnabled = true;
     this.raceSetup = {
       vehicle: this.vehicleIndex,
@@ -413,6 +414,15 @@ class Game {
       return;
     }
 
+    if (this.input.mapPressed) {
+      this.showMap = !this.showMap;
+    }
+
+    if (this.showMap && this.input.pausePressed) {
+      this.showMap = false;
+      return;
+    }
+
     if (this.input.pausePressed) this.togglePause();
 
     if (this.race?.over) {
@@ -430,6 +440,7 @@ class Game {
         playerZ: this.player.pos.z,
         playerYaw: this.player.yaw,
         race: this.race,
+        showMap: this.showMap,
       });
       return;
     }
@@ -538,10 +549,11 @@ class Game {
       playerZ: p.pos.z,
       playerYaw: p.yaw,
       race: this.race,
+      showMap: this.showMap,
     });
 
     if (this.ambientEnabled) {
-      if (this.pedestrians) this.pedestrians.update(dt, p.pos.x, p.pos.z);
+      if (this.pedestrians) this.pedestrians.update(dt, p.pos.x, p.pos.z, p);
       if (this.traffic) this.traffic.update(dt, p, this.pedestrians);
     }
   }
@@ -555,6 +567,7 @@ class Game {
   togglePause() {
     this.paused = !this.paused;
     if (this.paused) {
+      this.showMap = false;
       this.menu = { view: 'main', index: 0, liveRace: !!this.race };
       this.audio.stop();
       this._exitFullscreen();
@@ -1329,12 +1342,13 @@ class Hud {
 
   setCarName(name) { this.carName = name; }
 
-  update(dt, { speed = 0, playerX = 0, playerZ = 0, playerYaw = 0, race = null } = {}) {
+  update(dt, { speed = 0, playerX = 0, playerZ = 0, playerYaw = 0, race = null, showMap = false } = {}) {
     this.speed = speed;
     this.playerX = playerX;
     this.playerZ = playerZ;
     this.playerYaw = playerYaw;
     this.activeRace = race;
+    this.showMap = showMap;
     this._clock += dt;
     if (race?.results?.medal) this.medalT = Math.min(1, this.medalT + dt / 0.85);
     else this.medalT = 0;
@@ -1368,7 +1382,12 @@ class Hud {
       ctx.fillText(this.carName, w / 2, h - 22);
     }
 
-    /* 5. Translucent Touch Controls */
+    /* 5. Full Tactical Map Overlay (Toggled via [M] key or Map button) */
+    if (this.showMap) {
+      this._drawFullscreenMap(ctx, w, h);
+    }
+
+    /* 6. Translucent Touch Controls */
     if (this.touch) this._drawTouch(ctx, this.touch);
   }
 
@@ -1455,8 +1474,9 @@ class Hud {
       this._drawTouchButton(ctx, L.menuConfirm, L.menuConfirm.label, tc.confirmPressed, 'green');
       this._drawTouchButton(ctx, L.menuBack, L.menuBack.label, tc.pausePressed, 'red');
     } else {
-      // Top-Left Pause Button
+      // Top-Left Pause & Map Buttons
       this._drawTouchButton(ctx, L.pauseBtn, L.pauseBtn.label, tc.pausePressed, 'gold');
+      if (L.mapBtn) this._drawTouchButton(ctx, L.mapBtn, L.mapBtn.label, tc.mapPressed || this.showMap, 'gold');
 
       // Bottom-Left Steering Buttons
       this._drawTouchButton(ctx, L.leftBtn, L.leftBtn.label, tc.leftPressed, 'gold');
@@ -1756,6 +1776,290 @@ class Hud {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('N', nx, ny);
+
+    ctx.restore();
+  }
+
+  /* ---- Full Tactical Map Overlay ([M] key / Map button) --------------- */
+
+  _drawFullscreenMap(ctx, w, h) {
+    const isMobile = this.touch?.live;
+    const pad = isMobile ? 12 : 24;
+    const cardW = Math.min(w - pad * 2, 780);
+    const cardH = Math.min(h - pad * 2, 680);
+    const cardX = (w - cardW) / 2;
+    const cardY = (h - cardH) / 2;
+
+    ctx.save();
+
+    // 1. Dark semi-transparent card backdrop
+    ctx.shadowColor = 'rgba(10, 8, 12, 0.95)';
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = 'rgba(14, 12, 18, 0.94)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(cardX, cardY, cardW, cardH, 18);
+    else ctx.rect(cardX, cardY, cardW, cardH);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Outer border
+    ctx.strokeStyle = 'rgba(240, 230, 216, 0.22)';
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+
+    // 2. Card Header
+    const isRace = !!(this.activeRace && this.activeRace.route);
+    const route = isRace ? this.activeRace.route : null;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 18px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#f0e6d8';
+    ctx.fillText(isRace ? 'TACTICAL RACE MAP' : 'CITY MAP — OPEN ROAM', cardX + 22, cardY + 28);
+
+    ctx.textAlign = 'right';
+    ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#c9b8a5';
+    if (isRace) {
+      const modeLabel = route.coast ? 'BEACH RING' : (route.loop ? 'CIRCUIT' : 'SPRINT');
+      const lapStr = this.activeRace.loop
+        ? `LAP ${this.activeRace.playerSlot.lap + 1}/${this.activeRace.laps}`
+        : `${Math.round(route.length || 0)}M SPRINT`;
+      ctx.fillText(`${modeLabel} • ${lapStr}`, cardX + cardW - 22, cardY + 28);
+    } else {
+      ctx.fillText(isMobile ? '[MAP] CLOSE' : '[M] CLOSE MAP', cardX + cardW - 22, cardY + 28);
+    }
+
+    // 3. Map Viewport Dimensions
+    const mapPadTop = 48;
+    const mapPadBottom = 40;
+    const availW = cardW - 32;
+    const availH = cardH - mapPadTop - mapPadBottom;
+    const mapSize = Math.min(availW, availH);
+    const cx = cardX + cardW / 2;
+    const cy = cardY + mapPadTop + availH / 2;
+
+    const sc = (mapSize / 2 - 8) / ISLAND_R;
+    const toX = wx => cx + (wx - CENTER.x) * sc;
+    const toY = wz => cy + (wz - CENTER.z) * sc;
+
+    // Map Area Clipping
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, mapSize / 2, 0, Math.PI * 2);
+    ctx.clip();
+
+    // Ocean fill
+    ctx.fillStyle = '#122533';
+    ctx.beginPath();
+    ctx.arc(cx, cy, mapSize / 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Island landmass fill
+    ctx.beginPath();
+    ctx.arc(cx, cy, ISLAND_R * sc, 0, Math.PI * 2);
+    ctx.fillStyle = '#2d5a2d';
+    ctx.fill();
+
+    // Beach sand ring
+    ctx.beginPath();
+    ctx.arc(cx, cy, (ISLAND_R - 35) * sc, 0, Math.PI * 2);
+    ctx.fillStyle = '#3a7238';
+    ctx.fill();
+
+    // City center ring
+    ctx.beginPath();
+    ctx.arc(cx, cy, (ISLAND_R - 120) * sc, 0, Math.PI * 2);
+    ctx.fillStyle = '#42803f';
+    ctx.fill();
+
+    // 4. City Road Graph
+    if (this.graph?.edges && this.nodeMap) {
+      const edges = this.graph.edges;
+      const byId = this.nodeMap;
+      const minor = [], major = [];
+      for (let i = 0; i < edges.length; i++) {
+        const e = edges[i];
+        if (e.width >= 12) major.push(e);
+        else minor.push(e);
+      }
+
+      // Minor streets
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = 'rgba(210, 205, 198, 0.40)';
+      ctx.lineWidth = Math.max(1.2, 2.0 * (mapSize / 400));
+      ctx.beginPath();
+      for (let i = 0; i < minor.length; i++) {
+        const e = minor[i];
+        const a = byId.get(e.a), b = byId.get(e.b);
+        if (!a || !b) continue;
+        ctx.moveTo(toX(a.x), toY(a.z));
+        ctx.lineTo(toX(b.x), toY(b.z));
+      }
+      ctx.stroke();
+
+      // Major 2-lane avenues
+      ctx.strokeStyle = 'rgba(255, 248, 238, 0.85)';
+      ctx.lineWidth = Math.max(2.2, 3.8 * (mapSize / 400));
+      ctx.beginPath();
+      for (let i = 0; i < major.length; i++) {
+        const e = major[i];
+        const a = byId.get(e.a), b = byId.get(e.b);
+        if (!a || !b) continue;
+        ctx.moveTo(toX(a.x), toY(a.z));
+        ctx.lineTo(toX(b.x), toY(b.z));
+      }
+      ctx.stroke();
+    }
+
+    // 5. If in Race Mode: Draw Race Route, Checkpoints, and Opponent / Rival Cars
+    if (isRace && route) {
+      const pts = route.points || [];
+      const cps = route.checkpoints || [];
+      const curCpIdx = this.activeRace.playerSlot?.cp || 0;
+      const n = cps.length;
+
+      // 5a. Route polyline
+      if (pts.length > 1) {
+        // Glowing outline
+        ctx.strokeStyle = 'rgba(255, 184, 0, 0.35)';
+        ctx.lineWidth = 6.0;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        for (let i = 0; i < pts.length; i++) {
+          const u = toX(pts[i].x), v = toY(pts[i].z);
+          if (i === 0) ctx.moveTo(u, v);
+          else ctx.lineTo(u, v);
+        }
+        if (route.loop) ctx.closePath();
+        ctx.stroke();
+
+        // Main golden path
+        ctx.strokeStyle = '#ffd54a';
+        ctx.lineWidth = 3.6;
+        ctx.beginPath();
+        for (let i = 0; i < pts.length; i++) {
+          const u = toX(pts[i].x), v = toY(pts[i].z);
+          if (i === 0) ctx.moveTo(u, v);
+          else ctx.lineTo(u, v);
+        }
+        if (route.loop) ctx.closePath();
+        ctx.stroke();
+      }
+
+      // 5b. Checkpoints
+      for (let i = 0; i < cps.length; i++) {
+        const cp = cps[i];
+        const cu = toX(cp.x), cv = toY(cp.z);
+        const isLive = n > 0 && (i === curCpIdx % n);
+        const isStart = i === 0;
+
+        if (isStart) {
+          ctx.fillStyle = '#6f8f38';
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.arc(cu, cv, 5.0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        } else if (isLive) {
+          const pulse = (this._clock * 3.5) % 1;
+          ctx.strokeStyle = `rgba(255, 213, 74, ${1 - pulse})`;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(cu, cv, 5 + pulse * 10, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.fillStyle = '#ffb800';
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(cu, cv, 5.0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = 'rgba(255, 184, 0, 0.70)';
+          ctx.beginPath();
+          ctx.arc(cu, cv, 3.0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // 5c. Opponent / Rival Cars
+      const rivals = this.activeRace.entries || [];
+      for (let i = 0; i < rivals.length; i++) {
+        const rv = rivals[i];
+        if (rv.isPlayer || !rv.car?.pos) continue;
+        const rx = toX(rv.car.pos.x), ry = toY(rv.car.pos.z);
+
+        ctx.shadowColor = 'rgba(255, 50, 50, 0.9)';
+        ctx.shadowBlur = 8;
+        ctx.fillStyle = '#ff3838';
+        ctx.beginPath();
+        ctx.arc(rx, ry, 5.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        ctx.strokeStyle = '#140c0e';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Rival tag
+        ctx.font = '700 9px ui-sans-serif, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(`R${i + 1}`, rx, ry - 8);
+      }
+    }
+
+    // 6. Player Vehicle Marker & Orientation Arrow
+    const px = toX(this.playerX);
+    const py = toY(this.playerZ);
+
+    // Player position pulse
+    const pPulse = (this._clock * 2) % 1;
+    ctx.strokeStyle = `rgba(255, 90, 36, ${0.8 * (1 - pPulse)})`;
+    ctx.lineWidth = 2.0;
+    ctx.beginPath();
+    ctx.arc(px, py, 6 + pPulse * 12, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Player arrow
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(this.playerYaw);
+    ctx.shadowColor = 'rgba(255, 90, 36, 0.95)';
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = '#ff5a24';
+    ctx.beginPath();
+    ctx.moveTo(9, 0);
+    ctx.lineTo(-6, -6);
+    ctx.lineTo(-2, 0);
+    ctx.lineTo(-6, 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.restore(); // End Map Clipping
+
+    // Map Border Ring
+    ctx.strokeStyle = 'rgba(240, 230, 216, 0.35)';
+    ctx.lineWidth = 2.0;
+    ctx.beginPath();
+    ctx.arc(cx, cy, mapSize / 2, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 7. Footer Prompt
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(240, 230, 216, 0.75)';
+    ctx.fillText(isMobile ? 'TAP [MAP] OR TOUCH OUTSIDE TO CLOSE' : 'PRESS [M] OR [ESC] TO CLOSE MAP', cardX + cardW / 2, cardY + cardH - 18);
 
     ctx.restore();
   }

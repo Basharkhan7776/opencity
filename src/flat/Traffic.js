@@ -55,9 +55,57 @@ export class Traffic {
     this._indexGraph();
   }
 
-  setCount(n) {
+  async _addCar(i) {
+    if (!this.vehicles.length) return null;
+    const vIdx = (i * 2 + 1) % this.vehicles.length;
+    const spec = this.vehicles[vIdx];
+    try {
+      const view = await this.loadView(vIdx);
+      this.root.add(view.root);
+      view.root.visible = false;
+
+      const car = new Car(this.track, {
+        palette: (i % 6) + 1,
+        ai: true,
+        perf: spec.perf,
+      });
+
+      const item = {
+        car,
+        view,
+        spec,
+        vIdx,
+        active: false,
+        edge: null,
+        dir: 1,
+        laneOffset: 1.6,
+        targetSpeed: 13 + (i % 4) * 2.2,
+        steerSmooth: 0,
+        throttleSmooth: 0,
+        stuckTimer: 0,
+        isWaitingJunction: false,
+        junctionTimer: 0,
+        lastJunctionId: null,
+        hasWaitedAtNode: false,
+        nextBranch: null,
+        isWaitingObstacle: false,
+        obstacleTimer: 0,
+        _lastPos: new THREE.Vector2(),
+      };
+      this.cars.push(item);
+      return item;
+    } catch (err) {
+      console.warn('Traffic vehicle load error', err);
+      return null;
+    }
+  }
+
+  async setCount(n) {
     this.limit = Math.max(0, n | 0);
     if (!this.ready) return;
+    while (this.cars.length < this.limit) {
+      await this._addCar(this.cars.length);
+    }
     for (let i = 0; i < this.cars.length; i++) {
       if (i >= this.limit) {
         this.cars[i].active = false;
@@ -157,68 +205,42 @@ export class Traffic {
       return;
     }
 
-    const POOL_CAP = 12;
+    const initialCount = Math.max(12, Math.min(50, this.limit));
     const loadPromises = [];
-
-    for (let i = 0; i < POOL_CAP; i++) {
-      // Pick varied civilian/commercial vehicles from the fleet
-      const vIdx = (i * 2 + 1) % this.vehicles.length;
-      const spec = this.vehicles[vIdx];
-
-      loadPromises.push(
-        this.loadView(vIdx).then(view => {
-          this.root.add(view.root);
-          view.root.visible = false;
-
-          const car = new Car(this.track, {
-            palette: (i % 6) + 1,
-            ai: true,
-            perf: spec.perf,
-          });
-
-          return {
-            car,
-            view,
-            spec,
-            vIdx,
-            active: false,
-            edge: null,
-            dir: 1,
-            laneOffset: 1.6,
-            targetSpeed: 13 + (i % 4) * 2.2,
-            steerSmooth: 0,
-            throttleSmooth: 0,
-            stuckTimer: 0,
-            isWaitingJunction: false,
-            junctionTimer: 0,
-            lastJunctionId: null,
-            hasWaitedAtNode: false,
-            nextBranch: null,
-            isWaitingObstacle: false,
-            obstacleTimer: 0,
-            _lastPos: new THREE.Vector2(),
-          };
-        }).catch(err => {
-          console.warn('Traffic vehicle load error', err);
-          return null;
-        })
-      );
+    for (let i = 0; i < initialCount; i++) {
+      loadPromises.push(this._addCar(i));
     }
-
-    const loaded = await Promise.all(loadPromises);
-    this.cars = loaded.filter(Boolean);
+    await Promise.all(loadPromises);
     this.ready = true;
     this.setCount(this.limit);
   }
 
-  _spawn(item, px, pz) {
+  _spawn(item, px, pz, player) {
     if (!this._edges.length) return false;
 
-    for (let tries = 0; tries < 10; tries++) {
+    let pFwdX = 0, pFwdZ = 1;
+    if (player?.forward) {
+      pFwdX = player.forward.x;
+      pFwdZ = player.forward.z;
+    } else if (player?.yaw != null) {
+      pFwdX = Math.cos(player.yaw);
+      pFwdZ = Math.sin(player.yaw);
+    }
+
+    for (let tries = 0; tries < 25; tries++) {
       const ang = Math.random() * Math.PI * 2;
       const d = TRAFFIC_SPAWN_MIN + Math.random() * (this.spawnMax - TRAFFIC_SPAWN_MIN);
       const sx = px + Math.cos(ang) * d;
       const sz = pz + Math.sin(ang) * d;
+
+      // Reject candidates in front of the player (< 180m and dot > 0.20)
+      const toSx = sx - px, toSz = sz - pz;
+      const dist = Math.hypot(toSx, toSz);
+      if (dist < 1e-3) continue;
+      const dotFwd = (toSx / dist) * pFwdX + (toSz / dist) * pFwdZ;
+      if (dotFwd > 0.20 && dist < 180) {
+        continue;
+      }
 
       const edge = this._closestEdge(sx, sz);
       if (!edge) continue;
@@ -241,10 +263,20 @@ export class Traffic {
 
       const posX = ex + normX * item.laneOffset;
       const posZ = ez + normZ * item.laneOffset;
+
+      // Verify the placed position is also not directly in front of the player
+      const finalDx = posX - px, finalDz = posZ - pz;
+      const finalDist = Math.hypot(finalDx, finalDz);
+      if (finalDist > 0) {
+        const finalDot = (finalDx / finalDist) * pFwdX + (finalDz / finalDist) * pFwdZ;
+        if (finalDot > 0.20 && finalDist < 180) {
+          continue;
+        }
+      }
+
       const yaw = Math.atan2(fwdZ, fwdX);
 
-      item.car.placeAt(posX, posZ);
-      item.car.yaw = yaw;
+      item.car.placeAtWorld(posX, posZ, yaw);
       item.car.vx = 7 + Math.random() * 3;
       item.car.vy = 0;
       item.car.r = 0;
@@ -579,6 +611,7 @@ export class Traffic {
     }
 
     let respawns = 0;
+    const maxRespawns = Math.max(2, Math.min(8, Math.ceil(this.limit / 6)));
     const radSq = this.radius * this.radius;
 
     for (let i = 0; i < this.cars.length; i++) {
@@ -600,7 +633,7 @@ export class Traffic {
           item.active = false;
           if (item.view?.root) item.view.root.visible = false;
         }
-      } else if (respawns < 2 && this._spawn(item, px, pz)) {
+      } else if (respawns < maxRespawns && this._spawn(item, px, pz, player)) {
         respawns++;
       }
     }

@@ -300,12 +300,33 @@ export class Pedestrians {
    * edge to a random point in it, and the walker is born at the middle of
    * the footpath strip on a random side of that road.
    */
-  _spawn(ped, px, pz) {
+  _spawn(ped, px, pz, player) {
     if (!this._edges.length) return false;
-    for (let tries = 0; tries < 10; tries++) {
+
+    let pFwdX = 0, pFwdZ = 1;
+    if (player?.forward) {
+      pFwdX = player.forward.x;
+      pFwdZ = player.forward.z;
+    } else if (player?.yaw != null) {
+      pFwdX = Math.cos(player.yaw);
+      pFwdZ = Math.sin(player.yaw);
+    }
+
+    for (let tries = 0; tries < 20; tries++) {
       const ang = Math.random() * Math.PI * 2;
       const d = PED_SPAWN_MIN + Math.random() * (this.spawnMax - PED_SPAWN_MIN);
-      const edge = this._closestEdge(px + Math.cos(ang) * d, pz + Math.sin(ang) * d);
+      const sx = px + Math.cos(ang) * d;
+      const sz = pz + Math.sin(ang) * d;
+
+      // Reject candidates in front of the player (< 120m and dot > 0.35)
+      const toSx = sx - px, toSz = sz - pz;
+      const dist = Math.hypot(toSx, toSz);
+      if (dist > 0) {
+        const dotFwd = (toSx / dist) * pFwdX + (toSz / dist) * pFwdZ;
+        if (dotFwd > 0.35 && dist < 120) continue;
+      }
+
+      const edge = this._closestEdge(sx, sz);
       if (!edge) continue;
       ped.edge = edge;
       ped.t = 0.08 + Math.random() * 0.84;
@@ -383,9 +404,10 @@ export class Pedestrians {
   /**
    * Advance the cast. Called once per simulation step from Game.step.
    */
-  update(dt, px, pz) {
+  update(dt, px, pz, player) {
     if (!this.ready || this.disposed || this.enabled === false) return;
     let respawns = 0;
+    const maxRespawns = Math.max(2, Math.min(8, Math.ceil(this.limit / 6)));
     for (let i = 0; i < this.peds.length; i++) {
       const ped = this.peds[i];
       if (i >= this.limit) {
@@ -399,7 +421,7 @@ export class Pedestrians {
         this._footPathPoint(ped, ped.anchor.position);
         const dx = ped.anchor.position.x - px, dz = ped.anchor.position.z - pz;
         if (dx * dx + dz * dz > this.radius * this.radius) ped.active = false;
-      } else if (respawns < 2 && this._spawn(ped, px, pz)) {
+      } else if (respawns < maxRespawns && this._spawn(ped, px, pz, player)) {
         respawns++;
       }
       ped.anchor.visible = ped.active;
