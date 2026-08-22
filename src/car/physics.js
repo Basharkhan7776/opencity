@@ -315,6 +315,48 @@ export class Car {
     this.perf.drift = perf.drift ?? 1;
   }
 
+  /** Drop the car at world coordinates (x, z) with heading `yaw` (radians). */
+  placeAtWorld(x, z, yaw = 0) {
+    const y = (typeof this.track?.heightAt === 'function')
+      ? this.track.heightAt(x, z)
+      : (this.track?.WATER_LEVEL || 0);
+
+    if (typeof this.track?.normalAt === 'function') {
+      this.track.normalAt(x, z, this.up);
+    } else {
+      this.up.set(0, 1, 0);
+    }
+
+    this.pos.set(x, y + CAR.rideHeight, z);
+    this._prevPos.copy(this.pos);
+    this.renderPos.copy(this.pos);
+
+    this.yaw = yaw;
+    this._orient();
+
+    this.vx = 0; this.vy = 0; this.r = 0;
+    this.steer = 0; this.steerVel = 0; this.steerCmd = 0; this._rAir = 0;
+    this.rpm = IDLE_RPM; this.gear = 0;
+    this.height = 0; this.vertVel = 0;
+    this.airborne = false; this.airTime = 0; this.landingForce = 0;
+    this.launched = null; this.launchSpeed = 0; this.sinceLaunch = 0;
+    this.boostTimer = 0;
+    this.launchFirst = false; this._lips.clear();
+    this._lastS = -1;
+    this.throttle = 0; this.brake = 0; this.handbrake = 0;
+    this.roll = 0; this.pitch = 0; this._rollLoad = 0;
+    this.airPitch = 0; this.squash = 0; this.squashVel = 0;
+    this.susp.fill(0); this.suspVel.fill(0); this.wheelSlip.fill(0);
+    this.loadF = MASS * G * (B / WB) * 0.5;
+    this.loadR = MASS * G * (A / WB) * 0.5;
+    this._lastFy = 0; this._slipF = 0; this._slipR = 0;
+    this._circleF = 1; this._circleR = 1;
+    this.lastImpact = 0; this.offRoad = 0; this.strandedFor = 0;
+    this._reverse = false;
+    this._climbing = false;
+    this._hasHint = false;
+  }
+
   /** Drop the car onto the stage at arc length `s`, `lat` metres right of centre. */
   placeAt(s, lat = 0) {
     const f = this.track.frameAt(s);

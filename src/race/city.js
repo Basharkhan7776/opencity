@@ -184,8 +184,8 @@ export class CityRace {
       : this.entries.find(e => e.car === car);
     const s = slot ? slot.pathS : 0;
     const p = pointAtS(this.route, s);
-    car.placeAt(p.x, p.z);
-    car.yaw = Math.atan2(p.tz, p.tx);
+    const yaw = Math.atan2(p.tz, p.tx);
+    car.placeAtWorld(p.x, p.z, yaw);
     car.vx = 4;
     car.vy = 0;
     car.r = 0;
@@ -237,8 +237,7 @@ export class CityRace {
     const nx = -tz, nz = tx;
     const x = p0.x + tx * ds + nx * lat;
     const z = p0.z + tz * ds + nz * lat;
-    car.placeAt(x, z);
-    car.yaw = yaw;
+    car.placeAtWorld(x, z, yaw);
     car.finished = false;
     car.raceTime = 0;
   }

@@ -11,6 +11,7 @@
  */
 import * as THREE from 'three';
 import { FlatTrack, ROAD_WIDTH, INTER_X, WATER_LEVEL } from './flat/FlatTrack.js';
+import { CENTER, ISLAND_R } from './flat/Island.js';
 import { buildFlatWorld } from './flat/FlatWorld.js';
 import { Pedestrians, PED_RADIUS } from './flat/Pedestrians.js';
 import { Traffic, TRAFFIC_COUNT } from './flat/Traffic.js';
@@ -29,6 +30,9 @@ import {
   RACE_LENGTHS, RACE_LENGTH_LABELS,
   RACE_DIFFS, RACE_DIFF_LABELS, RACE_MAX_LAPS,
 } from './race/city.js';
+import {
+  loadMedals, saveMedals, awardPlace, fillOf, MEDAL_RANKS,
+} from './race/medals.js';
 
 /* Silent audio stub — real Audio engine disabled for now. */
 const Audio = class {
@@ -307,7 +311,9 @@ class Game {
       laps: 3,
       difficulty: 1,
     };
+    this.racePreview = null;
     this.menu = null;
+    this.medals = loadMedals();
     this.gfx = this._loadGfx();
     this._applyGfx({ persist: false });
 
@@ -410,8 +416,14 @@ class Game {
     if (this.input.pausePressed) this.togglePause();
 
     if (this.race?.over) {
+      if (!this.race.results.medal) {
+        this.race.results.medal = awardPlace(this.medals, this.race.results.pos);
+        saveMedals(this.medals);
+        this.hud.medalT = 0;
+      }
       if (this.input.confirmPressed || this.input.resetPressed) this.endRace();
       this.hud.race = this.race ? this.race.hud() : null;
+      this.hud.medals = this.medals;
       this.hud.update(dt, {
         speed: this.player.speed,
         playerX: this.player.pos.x,
@@ -519,6 +531,7 @@ class Game {
     });
 
     this.hud.race = this.race ? this.race.hud() : null;
+    this.hud.medals = this.medals;
     this.hud.update(dt, {
       speed: p.speed,
       playerX: p.pos.x,
@@ -612,6 +625,8 @@ class Game {
     if (!m) return;
     m.liveRace = !!this.race;
     m.setup = this.raceSetup;
+    m.preview = this.racePreview;
+    m.medals = this.medals;
     if (this._switching) return;
     m.gfx = this.gfx;
     if (i.pausePressed) {
@@ -631,7 +646,11 @@ class Game {
       else if (i.confirmPressed) {
         const pick = items[m.index];
         if (pick === 'RESUME') this.togglePause();
-        else if (pick === 'RACE') { m.view = 'race'; m.index = 0; }
+        else if (pick === 'RACE') {
+          m.view = 'race';
+          m.index = 0;
+          this._previewRace(false);
+        }
         else if (pick === 'CHANGE VEHICLE') {
           m.view = 'vehicles';
           m.index = this.vehicleIndex;
@@ -656,7 +675,12 @@ class Game {
     const m = this.menu;
     const i = this.input;
     const s = this.raceSetup;
+    this._previewRace(false);
     const rows = 5; /* vehicle, length, laps, difficulty, START */
+    if (i.resetPressed) {
+      this._previewRace(true);
+      return;
+    }
     if (i.menuUpPressed) m.index = (m.index + rows - 1) % rows;
     else if (i.menuDownPressed) m.index = (m.index + 1) % rows;
     else if (i.menuLeftPressed || i.menuRightPressed) {
@@ -665,14 +689,38 @@ class Game {
         s.vehicle = (s.vehicle + dir + VEHICLES.length) % VEHICLES.length;
       } else if (m.index === 1) {
         s.lengthIdx = (s.lengthIdx + dir + RACE_LENGTHS.length) % RACE_LENGTHS.length;
+        this._previewRace(true);
       } else if (m.index === 2) {
         s.laps = (s.laps + dir + RACE_MAX_LAPS + 1) % (RACE_MAX_LAPS + 1);
+        this._previewRace(true);
       } else if (m.index === 3) {
         s.difficulty = (s.difficulty + dir + RACE_DIFFS.length) % RACE_DIFFS.length;
       }
     } else if (i.confirmPressed && m.index === 4) {
       this._startRace();
     }
+  }
+
+  /** Build or refresh the route shown on the race-setup map. */
+  _previewRace(force) {
+    const graph = this.world?.city?.graph;
+    if (!graph) return;
+    const s = this.raceSetup;
+    const stale = !this.racePreview
+      || this.racePreview.lengthIdx !== s.lengthIdx
+      || this.racePreview.laps !== s.laps
+      || !this.racePreview.route;
+    if (!force && !stale) return;
+    const route = generateRoute(graph, {
+      length: RACE_LENGTHS[s.lengthIdx],
+      loop: s.laps > 0,
+      seed: (Math.random() * 0xffffffff) >>> 0,
+    });
+    this.racePreview = {
+      route,
+      lengthIdx: s.lengthIdx,
+      laps: s.laps,
+    };
   }
 
   _settingsMenuStep() {
@@ -835,11 +883,16 @@ class Game {
     let race = null;
     try {
       const s = this.raceSetup;
-      const route = generateRoute(graph, {
-        length: RACE_LENGTHS[s.lengthIdx],
-        loop: s.laps > 0,
-        seed: (Math.random() * 0xffffffff) >>> 0,
-      });
+      this._previewRace(false);
+      const route = this.racePreview?.route
+        && this.racePreview.lengthIdx === s.lengthIdx
+        && this.racePreview.laps === s.laps
+        ? this.racePreview.route
+        : generateRoute(graph, {
+          length: RACE_LENGTHS[s.lengthIdx],
+          loop: s.laps > 0,
+          seed: (Math.random() * 0xffffffff) >>> 0,
+        });
       if (!route) return;
       await this._loadVehicle(s.vehicle);
       race = new CityRace({
@@ -855,13 +908,15 @@ class Game {
       });
       await race.begin(this.player);
       this.player.applyTo(this.playerView, 0);
-      if (this.chase?.snap) this.chase.snap(this.player);
-      else if (this.chase?.set) this.chase.set(this.player.pos, this.player.forward);
+      for (const entry of race.entries) {
+        if (entry.view) entry.car.applyTo(entry.view, 0);
+      }
       if (this.race) this.race.dispose();
       this.setAmbient(false);
       this.race = race;
       started = true;
       this.chase.started = false;
+      this.chase.update(this.player, 1 / 60, { lookBack: false, orbitYaw: 0, orbitPitch: 0 });
       this.lookYaw = 0;
       this.lookPitch = 0;
       this.resetSimClock();
@@ -917,8 +972,9 @@ class Game {
       const a = byId.get(e.a);
       const b = byId.get(e.b);
       if (a && b) {
-        p.placeAt((a.x + b.x) * 0.5, (a.z + b.z) * 0.5);
-        p.yaw = Math.atan2(b.z - a.z, b.x - a.x);
+        const yaw = Math.atan2(b.z - a.z, b.x - a.x);
+        p.placeAtWorld((a.x + b.x) * 0.5, (a.z + b.z) * 0.5, yaw);
+        if (this.chase) this.chase.started = false;
         this.resetSimClock();
         return;
       }
@@ -934,9 +990,9 @@ class Game {
   /** Map centre of the island flats (same as spawn). */
   teleportToCenter() {
     const p = this.player;
-    p.placeAt(INTER_X, 0);
+    p.placeAtWorld(INTER_X, 0, 0);
     p.vertVel = 0; p.height = 0;
-    this.chase.started = false;
+    if (this.chase) this.chase.started = false;
   }
 
   /* ---- free-fly camera (Ctrl+Shift+C) -------------------------------- */
@@ -1223,6 +1279,17 @@ class Game {
   }
 }
 
+function roundRect(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, w * 0.5, h * 0.5);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
 /* The HUD: real-time mini map radar, crisp digital speed readout, race stats, and pause plate. */
 class Hud {
   constructor(canvas, graph = null) {
@@ -1232,6 +1299,8 @@ class Hud {
     this.speed = 0;
     this.carName = '';
     this.race = null;
+    this.medals = null;
+    this.medalT = 0;
     this.playerX = 0;
     this.playerZ = 0;
     this.playerYaw = 0;
@@ -1267,6 +1336,8 @@ class Hud {
     this.playerYaw = playerYaw;
     this.activeRace = race;
     this._clock += dt;
+    if (race?.results?.medal) this.medalT = Math.min(1, this.medalT + dt / 0.85);
+    else this.medalT = 0;
   }
 
   draw(paused = false, menu = null) {
@@ -1712,12 +1783,13 @@ class Hud {
     ctx.font = '500 15px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = '#c9b8a5';
     ctx.fillText(this.carName || '', w / 2, h / 2 - 75);
+    this._drawMedalChip(ctx, w / 2, h / 2 - 52, menu?.medals || this.medals);
 
     const items = menu?.liveRace
       ? ['RESUME', 'SETTINGS', 'LEAVE RACE']
       : ['RESUME', 'RACE', 'CHANGE VEHICLE', 'SETTINGS', 'RESTART'];
     ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
-    const startY = h / 2 - 32;
+    const startY = h / 2 - 14;
     for (let k = 0; k < items.length; k++) {
       const y = startY + k * 34;
       const sel = menu ? k === menu.index : k === 0;
@@ -1771,33 +1843,111 @@ class Hud {
       ['START RACE', ''],
     ];
 
+    const mapSize = Math.min(340, h * 0.52, w * 0.38);
+    const mapX = Math.max(24, w / 2 - mapSize - 36);
+    const mapY = h / 2 - mapSize / 2 + 8;
+    const optX = mapX + mapSize + 36;
+
     ctx.font = '700 28px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = '#f0e6d8';
     ctx.shadowColor = 'rgba(20,10,14,0.9)';
     ctx.shadowBlur = 10;
-    ctx.fillText('RACE', w / 2, h / 2 - 130);
+    ctx.fillText('RACE', w / 2, Math.max(36, mapY - 28));
     ctx.shadowBlur = 0;
 
+    this._drawRacePreviewMap(ctx, mapX, mapY, mapSize, menu.preview?.route);
+
     ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
+    const rowTop = mapY + 18;
     for (let k = 0; k < rows.length; k++) {
-      const y = h / 2 - 70 + k * 36;
+      const y = rowTop + k * 36;
       const sel = k === menu.index;
       ctx.fillStyle = sel ? '#ffd54a' : 'rgba(201,184,165,0.8)';
-      if (sel) ctx.fillText('▶', w / 2 - 220, y);
       ctx.textAlign = 'left';
-      ctx.fillText(rows[k][0], w / 2 - 190, y);
+      if (sel) ctx.fillText('▶', optX - 22, y);
+      ctx.fillText(rows[k][0], optX, y);
       if (rows[k][1]) {
-        ctx.textAlign = 'right';
         ctx.fillStyle = sel ? '#f0e6d8' : 'rgba(240,230,216,0.75)';
-        ctx.fillText('<  ' + rows[k][1] + '  >', w / 2 + 220, y);
+        ctx.fillText('<  ' + rows[k][1] + '  >', optX + 130, y);
       }
-      ctx.textAlign = 'center';
     }
+    ctx.textAlign = 'center';
 
     ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(240,230,216,0.55)';
-    ctx.fillText('UP / DOWN  row    LEFT / RIGHT  value    ENTER  start    ESC  back',
-      w / 2, h / 2 + 140);
+    ctx.fillText('UP / DOWN  row    LEFT / RIGHT  value    R  new track    ENTER  start    ESC  back',
+      w / 2, Math.min(h - 28, mapY + mapSize + 28));
+  }
+
+  _drawRacePreviewMap(ctx, x, y, size, route) {
+    const cx = x + size / 2, cy = y + size / 2;
+    const sc = (size / 2 - 10) / ISLAND_R;
+    const toX = wx => cx + (wx - CENTER.x) * sc;
+    const toY = wz => cy + (wz - CENTER.z) * sc;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, size / 2, 0, Math.PI * 2);
+    ctx.clip();
+
+    ctx.fillStyle = '#1a3d52';
+    ctx.fillRect(x, y, size, size);
+    ctx.beginPath();
+    ctx.arc(cx, cy, ISLAND_R * sc, 0, Math.PI * 2);
+    ctx.fillStyle = '#3d7a38';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, cy, (ISLAND_R - 90) * sc, 0, Math.PI * 2);
+    ctx.fillStyle = '#4a9a42';
+    ctx.fill();
+
+    const graph = this.graph;
+    const byId = this.nodeMap;
+    if (graph?.edges && byId) {
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = 'rgba(40,40,46,0.85)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      for (const e of graph.edges) {
+        const a = byId.get(e.a), b = byId.get(e.b);
+        if (!a || !b) continue;
+        ctx.moveTo(toX(a.x), toY(a.z));
+        ctx.lineTo(toX(b.x), toY(b.z));
+      }
+      ctx.stroke();
+    }
+
+    if (route?.points?.length > 1) {
+      ctx.strokeStyle = '#ffd54a';
+      ctx.lineWidth = 3.2;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(toX(route.points[0].x), toY(route.points[0].z));
+      for (let i = 1; i < route.points.length; i++) {
+        ctx.lineTo(toX(route.points[i].x), toY(route.points[i].z));
+      }
+      if (route.loop) ctx.closePath();
+      ctx.stroke();
+      const p0 = route.points[0];
+      ctx.fillStyle = '#6f8f38';
+      ctx.beginPath();
+      ctx.arc(toX(p0.x), toY(p0.z), 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(240,230,216,0.45)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, size / 2, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = route?.coast ? '#e8c96a' : 'rgba(240,230,216,0.55)';
+    ctx.fillText(route ? (route.coast ? 'BEACH RING' : (route.loop ? 'CIRCUIT' : 'SPRINT')) : 'NO TRACK',
+      cx, y + size + 16);
   }
 
   _drawSettings(menu) {
@@ -1901,9 +2051,99 @@ class Hud {
       ctx.fillStyle = '#c9b8a5';
       ctx.fillText('BEST LAP  ' + formatTime(e.bestLap), w / 2, h / 2 + 46);
     }
+    this._drawMedalProgress(ctx, w / 2, h / 2 + (e.laps > 0 && e.bestLap != null ? 70 : 52), e.medal);
     ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(240,230,216,0.55)';
-    ctx.fillText('ENTER  OR  R   BACK TO THE CITY', w / 2, h / 2 + 88);
+    ctx.fillText('ENTER  OR  R   BACK TO THE CITY', w / 2, h / 2 + 148);
+  }
+
+  _drawMedalChip(ctx, cx, y, medals) {
+    if (!medals) return;
+    const rank = MEDAL_RANKS[medals.rank] || MEDAL_RANKS[0];
+    const next = MEDAL_RANKS[medals.rank + 1];
+    const fill = next ? fillOf(medals) : 1;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx - 78, y - 4, 7, 0, Math.PI * 2);
+    ctx.fillStyle = rank.color;
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#241812';
+    ctx.stroke();
+    ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#f0e6d8';
+    ctx.textAlign = 'left';
+    ctx.fillText(rank.name, cx - 66, y);
+    const bw = 110, bh = 6, bx = cx + 8, by = y - 8;
+    ctx.fillStyle = 'rgba(36,24,18,0.55)';
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = next ? next.color : rank.color;
+    ctx.fillRect(bx, by, bw * fill, bh);
+    ctx.strokeStyle = 'rgba(240,230,216,0.45)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx, by, bw, bh);
+    ctx.restore();
+    ctx.textAlign = 'center';
+  }
+
+  _drawMedalProgress(ctx, cx, y, medal) {
+    if (!medal) return;
+    const t = this.medalT;
+    const k = t * t * (3 - 2 * t);
+    const fill = medal.rankedUp
+      ? medal.toFill * k
+      : medal.fromFill + (medal.toFill - medal.fromFill) * k;
+    ctx.save();
+    ctx.textAlign = 'center';
+    if (medal.rankedUp) {
+      ctx.font = '700 16px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = medal.color;
+      ctx.fillText('RANK UP', cx, y);
+      y += 22;
+    } else if (medal.points > 0) {
+      ctx.font = '600 13px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = '#f0b429';
+      ctx.fillText('+' + medal.points + '  PODIUM', cx, y);
+      y += 20;
+    } else {
+      ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = '#c9b8a5';
+      ctx.fillText('NO PODIUM', cx, y);
+      y += 20;
+    }
+    ctx.beginPath();
+    ctx.arc(cx - 70, y - 5, 9, 0, Math.PI * 2);
+    ctx.fillStyle = medal.color;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#241812';
+    ctx.stroke();
+    ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = medal.color;
+    ctx.textAlign = 'left';
+    ctx.fillText(medal.name, cx - 56, y);
+    ctx.textAlign = 'center';
+    y += 18;
+    const bw = 260, bh = 9, bx = cx - bw / 2;
+    ctx.fillStyle = 'rgba(36,24,18,0.55)';
+    roundRect(ctx, bx, y, bw, bh, 3);
+    ctx.fill();
+    ctx.fillStyle = medal.nextColor || medal.color;
+    if (fill > 0) {
+      ctx.save();
+      ctx.beginPath();
+      roundRect(ctx, bx, y, Math.max(4, bw * fill), bh, 3);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.strokeStyle = 'rgba(240,230,216,0.5)';
+    ctx.lineWidth = 1.2;
+    roundRect(ctx, bx, y, bw, bh, 3);
+    ctx.stroke();
+    ctx.font = '500 11px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#c9b8a5';
+    ctx.fillText(medal.nextName ? ('NEXT  ' + medal.nextName) : 'MAX RANK', cx, y + 22);
+    ctx.restore();
   }
 
   /* The garage list — a scrolling window over VEHICLES, the current car

@@ -42,7 +42,7 @@ function buildAdj(graph) {
  * Directionally biased Dijkstra that strongly penalizes sharp turns/U-turns
  * and rewards staying straight on wide main avenues.
  */
-function dijkstraSmooth(adj, byId, from, to, initialDir = null) {
+function dijkstraSmooth(adj, byId, from, to, initialDir = null, useCoast = false) {
   if (from === to) return { ids: [from], length: 0 };
   const dist = new Map();
   const prev = new Map();
@@ -70,7 +70,12 @@ function dijkstraSmooth(adj, byId, from, to, initialDir = null) {
         if (dot < -0.2) turnPenalty = 300; // U-turn
         else if (dot < 0.7) turnPenalty = (1 - dot) * 25; // sharp turn
       }
-      const cost = n.length + turnPenalty * 0.5 - (n.width >= 12 ? 3.5 : 0);
+      const midR = Math.hypot(
+        (uNode.x + vNode.x) * 0.5 - CENTER.x,
+        (uNode.z + vNode.z) * 0.5 - CENTER.z,
+      );
+      const coastBonus = useCoast && midR > RESIDENTIAL_R + 20 ? 8 : 0;
+      const cost = n.length + turnPenalty * 0.5 - (n.width >= 12 ? 3.5 : 0) - coastBonus;
       const nd = d + Math.max(n.length * 0.4, cost);
       if (nd < (dist.get(n.to) ?? Infinity)) {
         dist.set(n.to, nd);
@@ -101,8 +106,11 @@ function dijkstraSmooth(adj, byId, from, to, initialDir = null) {
 /**
  * Generate a Large Flowing Circle Circuit around the city.
  */
-function generateLargeCircleRoute(adj, byId, targetLength, r) {
-  const idealR = clamp(targetLength / (Math.PI * 2), 70, RESIDENTIAL_R + 65);
+function generateLargeCircleRoute(adj, byId, targetLength, r, useCoast) {
+  const maxR = useCoast ? ISLAND_R * 0.80 : RESIDENTIAL_R + 65;
+  const minR = useCoast ? RESIDENTIAL_R * 0.92 : 70;
+  let idealR = clamp(targetLength / (Math.PI * 2), minR, maxR);
+  if (useCoast) idealR = Math.max(idealR, RESIDENTIAL_R + 90);
   const dir = r() > 0.5 ? 1 : -1; // Clockwise or counter-clockwise
   const startAng = r() * Math.PI * 2;
   const numWaypoints = targetLength > 1200 ? 8 : 4;
@@ -116,7 +124,11 @@ function generateLargeCircleRoute(adj, byId, targetLength, r) {
     let bestNode = null, bestDist = Infinity;
     for (const n of byId.values()) {
       if ((adj.get(n.id) || []).length < 2) continue;
-      const d = Math.hypot(n.x - targetX, n.z - targetZ);
+      let d = Math.hypot(n.x - targetX, n.z - targetZ);
+      if (useCoast) {
+        const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
+        if (rr < RESIDENTIAL_R + 24) d += 160;
+      }
       if (d < bestDist) {
         bestDist = d;
         bestNode = n.id;
@@ -132,7 +144,7 @@ function generateLargeCircleRoute(adj, byId, targetLength, r) {
   for (let i = 0; i < waypoints.length; i++) {
     const from = waypoints[i];
     const to = waypoints[(i + 1) % waypoints.length];
-    const seg = dijkstraSmooth(adj, byId, from, to);
+    const seg = dijkstraSmooth(adj, byId, from, to, null, useCoast);
     if (!seg || seg.ids.length < 2) return null;
     if (i === 0) allIds.push(...seg.ids);
     else allIds.push(...seg.ids.slice(1));
@@ -149,8 +161,8 @@ function generateLargeCircleRoute(adj, byId, targetLength, r) {
 /**
  * Generate a Straight Sprint Across The Map.
  */
-function generateStraightSprintRoute(adj, byId, targetLength, r) {
-  const span = Math.min(targetLength * 0.6, RESIDENTIAL_R + 80);
+function generateStraightSprintRoute(adj, byId, targetLength, r, useCoast) {
+  const span = Math.min(targetLength * 0.6, useCoast ? ISLAND_R * 0.82 : RESIDENTIAL_R + 80);
   const axes = [
     { startX: CENTER.x - span, startZ: CENTER.z, endX: CENTER.x + span, endZ: CENTER.z },
     { startX: CENTER.x + span, startZ: CENTER.z, endX: CENTER.x - span, endZ: CENTER.z },
@@ -162,12 +174,15 @@ function generateStraightSprintRoute(adj, byId, targetLength, r) {
 
   let startId = null, startDist = Infinity;
   let endId = null, endDist = Infinity;
+  const coastMin = RESIDENTIAL_R + 40;
 
   for (const n of byId.values()) {
     if ((adj.get(n.id) || []).length < 1) continue;
-    const ds = Math.hypot(n.x - axis.startX, n.z - axis.startZ);
+    const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
+    const coastBias = useCoast && rr > coastMin ? 180 : 0;
+    const ds = Math.hypot(n.x - axis.startX, n.z - axis.startZ) - coastBias;
     if (ds < startDist) { startDist = ds; startId = n.id; }
-    const de = Math.hypot(n.x - axis.endX, n.z - axis.endZ);
+    const de = Math.hypot(n.x - axis.endX, n.z - axis.endZ) - coastBias;
     if (de < endDist) { endDist = de; endId = n.id; }
   }
 
@@ -178,7 +193,7 @@ function generateStraightSprintRoute(adj, byId, targetLength, r) {
   const fwdLen = Math.hypot(fwdDx, fwdDz) || 1;
   const initialDir = { x: fwdDx / fwdLen, z: fwdDz / fwdLen };
 
-  const path = dijkstraSmooth(adj, byId, startId, endId, initialDir);
+  const path = dijkstraSmooth(adj, byId, startId, endId, initialDir, useCoast);
   if (!path || path.ids.length < 2) return null;
 
   let trimmedIds = [path.ids[0]];
@@ -343,10 +358,18 @@ export function generateRoute(graph, opts) {
   const loop = !!opts.loop;
   const r = rng((opts.seed ?? (Math.random() * 0xffffffff)) >>> 0);
   const { byId, adj } = buildAdj(graph);
+  let useCoast = opts.coast != null ? !!opts.coast : r() < (loop ? 0.42 : 0.34);
 
-  const res = loop
-    ? generateLargeCircleRoute(adj, byId, target, r)
-    : generateStraightSprintRoute(adj, byId, target, r);
+  let res = loop
+    ? generateLargeCircleRoute(adj, byId, target, r, useCoast)
+    : generateStraightSprintRoute(adj, byId, target, r, useCoast);
+
+  if ((!res || !res.ids || res.ids.length < 2) && useCoast) {
+    useCoast = false;
+    res = loop
+      ? generateLargeCircleRoute(adj, byId, target, r, false)
+      : generateStraightSprintRoute(adj, byId, target, r, false);
+  }
 
   if (!res || !res.ids || res.ids.length < 2) return null;
 
@@ -361,6 +384,7 @@ export function generateRoute(graph, opts) {
     checkpoints,
     length: points[points.length - 1].s,
     loop,
+    coast: useCoast,
     startYaw: Math.atan2(b.z - a.z, b.x - a.x),
   };
 }

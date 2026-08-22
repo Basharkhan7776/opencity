@@ -57,8 +57,8 @@ srv.listen(PORT, HOST, () => {
     const currentIp = currentIps.length > 0 ? currentIps[0].address : '';
     if (currentIp && currentIp !== lastIp) {
       lastIp = currentIp;
-      console.log('\n⚡ [NETWORK UPDATE] IP address changed on Wi-Fi!');
-      console.log(`📱 NEW MOBILE URL:  http://${currentIp}:${PORT}/\n`);
+      console.log('\n [NETWORK UPDATE] IP address changed on Wi-Fi!');
+      console.log(`NEW MOBILE URL:  http://${currentIp}:${PORT}/\n`);
     }
   }, 4000);
   monitor.unref();

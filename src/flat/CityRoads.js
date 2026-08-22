@@ -314,13 +314,16 @@ function buildJunctionFootpathBorder(cx, cz, r, dirX, dirZ) {
   const dp = [], dc = [], dn = [], di = [];
   const wp = [], wc = [], wn = [], wi = [];
   const foot = new THREE.Color(FOOT_COL);
-  const kerb = new THREE.Color(SHOULDER_COL);
 
   for (let i = 0; i < n; i++) {
     const u = -R + (2 * R) * (i / (n - 1));
     const bx = cx + tanX * u;
     const bz = cz + tanZ * u;
 
+    /* r is already the outer kerb of the junction plate (half-width + 0.45),
+       so this whole strip is sidewalk — same solid FOOT_COL as the arm
+       footpaths. Painting the inner 0.45 m as kerb made the closed side of
+       a T read as black asphalt. */
     const p0x = bx + dirX * r, p0z = bz + dirZ * r;
     const p1x = bx + dirX * (r + 0.45), p1z = bz + dirZ * (r + 0.45);
     const p2x = bx + dirX * (r + fw), p2z = bz + dirZ * (r + fw);
@@ -330,11 +333,11 @@ function buildJunctionFootpathBorder(cx, cz, r, dirX, dirZ) {
     const g2 = heightAt(p2x, p2z);
 
     dp.push(p0x, g0 + DECK, p0z);
-    dc.push(kerb.r, kerb.g, kerb.b);
+    dc.push(foot.r, foot.g, foot.b);
     dn.push(0, 1, 0);
 
     dp.push(p1x, g1 + DECK, p1z);
-    dc.push(kerb.r, kerb.g, kerb.b);
+    dc.push(foot.r, foot.g, foot.b);
     dn.push(0, 1, 0);
 
     dp.push(p2x, g2 + DECK, p2z);
@@ -351,8 +354,11 @@ function buildJunctionFootpathBorder(cx, cz, r, dirX, dirZ) {
     const a0 = i * 3, a1 = a0 + 1, a2 = a0 + 2;
     const b0 = (i + 1) * 3, b1 = b0 + 1, b2 = b0 + 2;
 
-    di.push(a0, a1, b0, a1, b1, b0);
-    di.push(a1, a2, b1, a2, b2, b1);
+    /* CCW from +Y so the grey deck is the front face (cel material is
+       FrontSide). The opposite winding pointed the tops into the ground,
+       culling them and showing grass through the footpath. */
+    di.push(a0, b0, a1, a1, b0, b1);
+    di.push(a1, b1, a2, a2, b1, b2);
 
     const w0 = i * 2, w1 = (i + 1) * 2;
     wi.push(w0, w1, w0 + 1, w0 + 1, w1, w1 + 1);
@@ -377,9 +383,8 @@ function buildCornerSidewalk(cx, cz, r, sgnX, sgnZ) {
   const dp = [], dc = [], dn = [], di = [];
   const wp = [], wc = [], wn = [], wi = [];
   const foot = new THREE.Color(FOOT_COL);
-  const kerb = new THREE.Color(SHOULDER_COL);
 
-  // 2x2 grid of vertices on top
+  // 2x2 grid of vertices on top — solid sidewalk grey, matching the arms.
   const xs = [minX, maxX];
   const zs = [minZ, maxZ];
   for (let j = 0; j < 2; j++) {
@@ -387,13 +392,12 @@ function buildCornerSidewalk(cx, cz, r, sgnX, sgnZ) {
       const px = xs[i], pz = zs[j];
       const g = heightAt(px, pz);
       dp.push(px, g + DECK, pz);
-      const isInner = (px === x0 || pz === z0);
-      const c = isInner ? kerb : foot;
-      dc.push(c.r, c.g, c.b);
+      dc.push(foot.r, foot.g, foot.b);
       dn.push(0, 1, 0);
     }
   }
-  di.push(0, 1, 2, 1, 3, 2);
+  /* CCW from +Y — same as the arm slabs. (0,1,2) faced downward. */
+  di.push(0, 2, 1, 1, 2, 3);
 
   // Outer walls on the outer edges (x1 facing sgnX, z1 facing sgnZ)
   const g00 = heightAt(minX, z1), g01 = heightAt(maxX, z1);
