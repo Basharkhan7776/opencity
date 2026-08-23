@@ -8,6 +8,7 @@ import { createCitySystem } from './CityLayout.js';
 import { buildCityMeshes } from './CityTiles.js';
 import { buildRoadNetworkMesh, buildRoadLift } from './CityRoads.js';
 import { CelestialSky } from './CelestialSky.js';
+import { OceanWaves } from './OceanWaves.js';
 
 /**
  * Keyframes for 24-hour atmosphere, sky, lighting, and fog interpolation.
@@ -95,9 +96,12 @@ export function buildFlatWorld({ shadowSize = 4096, shadowDist = 46 } = {}) {
     roadLift = buildRoadLift(city.graph, city.placements);
   }
 
-  const { land, water } = buildIslandMeshes({ roadLift });
+  const { land } = buildIslandMeshes({ roadLift });
   root.add(land);
-  root.add(water);
+
+  /* Dynamic Cel-Shaded Ocean Waves and Beach Surf Foam System */
+  const oceanWaves = new OceanWaves();
+  root.add(oceanWaves.mesh);
 
   /* Celestial sky system: Sun, Moon, Stars, and drifting Clouds */
   const celestialSky = new CelestialSky(root);
@@ -298,12 +302,15 @@ export function buildFlatWorld({ shadowSize = 4096, shadowDist = 46 } = {}) {
     // Update dynamic celestial sky (Sun, Moon, Stars, drifting Clouds)
     celestialSky.update(dt, timeOfDay, targetPos, atmo, camera);
 
+    // Update dynamic ocean waves and beach surf foam
+    oceanWaves.update(dt, atmo);
+
     return atmo;
   };
 
   return {
     root, sun, streetSpot, fill, fillB, hemi,
-    vegetation, city, celestialSky, get cityGroup() { return cityGroup; }, obstacles, roadLift,
+    vegetation, city, celestialSky, oceanWaves, get cityGroup() { return cityGroup; }, obstacles, roadLift,
     updateEnvironment,
     loadVegetation, loadCity,
   };

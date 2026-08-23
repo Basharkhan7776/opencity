@@ -949,11 +949,56 @@ export function planCity(seed = CITY_SEED) {
     }
     return false;
   };
+
+  /* Road clearance spatial grid for trees */
+  const CELL = 64;
+  const roadBins = new Map();
+  const rKey = (cx, cz) => cx * 73856093 ^ cz * 19349663;
+  const gById = new Map(g.nodes.map(n => [n.id, n]));
+  for (const e of g.edges) {
+    const a = gById.get(e.a), b = gById.get(e.b);
+    if (!a || !b) continue;
+    const h = e.width * 0.5 + 2.5 + 6.0; // road + kerb + footpath (2.5m) + margin (6.0m)
+    const seg = { ax: a.x, az: a.z, bx: b.x, bz: b.z, h };
+    const x0 = Math.floor(Math.min(a.x, b.x) / CELL) - 1;
+    const x1 = Math.floor(Math.max(a.x, b.x) / CELL) + 1;
+    const z0 = Math.floor(Math.min(a.z, b.z) / CELL) - 1;
+    const z1 = Math.floor(Math.max(a.z, b.z) / CELL) + 1;
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cz = z0; cz <= z1; cz++) {
+        const k = rKey(cx, cz);
+        const arr = roadBins.get(k);
+        if (arr) arr.push(seg);
+        else roadBins.set(k, [seg]);
+      }
+    }
+  }
+
+  const nearRoad = (x, z, pad = 0) => {
+    const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
+    for (let i = -1; i <= 1; i++) {
+      for (let j = -1; j <= 1; j++) {
+        const arr = roadBins.get(rKey(cx + i, cz + j));
+        if (!arr) continue;
+        for (const s of arr) {
+          const ex = s.bx - s.ax, ez = s.bz - s.az;
+          const el = ex * ex + ez * ez;
+          const t = el ? clamp(((x - s.ax) * ex + (z - s.az) * ez) / el, 0, 1) : 0;
+          const dx = x - (s.ax + ex * t), dz = z - (s.az + ez * t);
+          const req = s.h + pad;
+          if (dx * dx + dz * dz <= req * req) return true;
+        }
+      }
+    }
+    return false;
+  };
+
   const plantTree = (x, z, kind = 'tree') => {
     const y = heightAt(x, z);
     if (y < WATER_LEVEL + 0.6) return;
     if (normalAt(x, z).y < 0.55) return;
     if (nearSolid(x, z, 3)) return;
+    if (nearRoad(x, z, 1.0)) return;
     const v = W.pick(TREES);
     /* 6-15 m of final height, whichever model was drawn. */
     const s = (W.f(6, 15) * (W.chance(0.12) ? W.f(1.2, 1.5) : 1)) / v.h;

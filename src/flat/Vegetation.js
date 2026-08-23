@@ -168,11 +168,11 @@ const MIN_LAND_Y = WATER_LEVEL + 0.6;
 const MAX_SLOPE = 0.55;     // normal.y below this = too steep to plant
 
 /* How far outside the road slab vegetation must stay (kerb + footpath +
-   a little margin), so no tree or rock ever grows on the asphalt. */
-const ROAD_MARGIN = 3;
+   safety margin), so no tree or rock ever touches the road or footpath. */
+const ROAD_MARGIN = 8.5;
 
 /**
- * Coarse spatial query: is a point inside any road slab (plus ROAD_MARGIN)?
+ * Coarse spatial query: is a point inside any road slab or footpath (plus ROAD_MARGIN)?
  * Bins each edge segment into a fixed cell grid so the check is O(1) for a
  * typical point instead of scanning every edge.
  */
@@ -186,7 +186,7 @@ function buildRoadClearance(graph) {
     for (const e of graph.edges) {
       const a = byId.get(e.a), b = byId.get(e.b);
       if (!a || !b) continue;
-      const h = e.width * 0.5 + ROAD_MARGIN;
+      const h = e.width * 0.5 + 2.5 + ROAD_MARGIN; // road + kerb + footpath (2.5m) + margin
       const seg = { ax: a.x, az: a.z, bx: b.x, bz: b.z, h };
       const x0 = Math.floor(Math.min(a.x, b.x) / CELL) - 1;
       const x1 = Math.floor(Math.max(a.x, b.x) / CELL) + 1;
@@ -202,7 +202,7 @@ function buildRoadClearance(graph) {
       }
     }
   }
-  return (x, z) => {
+  return (x, z, objRadius = 0) => {
     const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
     for (let i = -1; i <= 1; i++) {
       for (let j = -1; j <= 1; j++) {
@@ -213,7 +213,8 @@ function buildRoadClearance(graph) {
           const el = ex * ex + ez * ez;
           const t = el ? clamp(((x - s.ax) * ex + (z - s.az) * ez) / el, 0, 1) : 0;
           const dx = x - (s.ax + ex * t), dz = z - (s.az + ez * t);
-          if (dx * dx + dz * dz <= s.h * s.h) return true;
+          const clearDist = s.h + objRadius;
+          if (dx * dx + dz * dz <= clearDist * clearDist) return true;
         }
       }
     }
@@ -375,6 +376,7 @@ export function planVegetation(graph) {
         if (ty < MIN_LAND_Y || ty > ceil + 1) continue;
         if (inCity(tx, tz)) continue;
         if (normalAt(tx, tz).y < 0.4) continue;
+        if (nearRoad(tx, tz, 4.0)) continue;
         const kind = R.chance(0.7) ? 'treeHigh' : 'tree';
         const t = placeTree(R, kind, tx, ty, tz);
         placements.push(t.placement);
@@ -399,7 +401,7 @@ export function planVegetation(graph) {
     if (rr < WILD_R0) continue;
     if (mountainFactor(wx, wz) > 0.3) continue;
     if (inCity(wx, wz)) continue;
-    if (nearRoad(wx, wz)) continue;
+    if (nearRoad(wx, wz, 5.0)) continue;
     const wy = heightAt(wx, wz);
     if (wy < MIN_LAND_Y) continue;
     if (normalAt(wx, wz).y < 0.6) continue;
@@ -418,7 +420,7 @@ export function planVegetation(graph) {
       const ty = heightAt(tx, tz);
       if (ty < MIN_LAND_Y || ty > 30) continue;
       if (normalAt(tx, tz).y < 0.5) continue;
-      if (nearRoad(tx, tz)) continue;
+      if (nearRoad(tx, tz, 4.0)) continue;
       const kind = R.chance(0.55) ? 'tree' : 'treeHigh';
       const t = placeTree(R, kind, tx, ty, tz);
       placements.push(t.placement);
@@ -441,7 +443,7 @@ export function planVegetation(graph) {
       const { rr, beachStart } = coastAt(x, z);
       if (rr > beachGate(beachStart)) continue;
       if (normalAt(x, z).y < 0.5) continue;
-      if (nearRoad(x, z)) continue;
+      if (nearRoad(x, z, 5.0)) continue;
       const kinds = ['stones', 'rocksLow', 'rocksHigh', 'rocksRamp'];
       const kind = kinds[R.i(0, kinds.length - 1)];
       const def = KINDS[kind];
