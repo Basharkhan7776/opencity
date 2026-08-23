@@ -7,6 +7,7 @@ import { createVegetationSystem, buildVegetationMeshes, ObstacleGrid } from './V
 import { createCitySystem } from './CityLayout.js';
 import { buildCityMeshes } from './CityTiles.js';
 import { buildRoadNetworkMesh, buildRoadLift } from './CityRoads.js';
+import { CelestialSky } from './CelestialSky.js';
 
 /**
  * Keyframes for 24-hour atmosphere, sky, lighting, and fog interpolation.
@@ -97,6 +98,9 @@ export function buildFlatWorld({ shadowSize = 4096, shadowDist = 46 } = {}) {
   const { land, water } = buildIslandMeshes({ roadLift });
   root.add(land);
   root.add(water);
+
+  /* Celestial sky system: Sun, Moon, Stars, and drifting Clouds */
+  const celestialSky = new CelestialSky(root);
 
   if (city.graph) {
     const roads = buildRoadNetworkMesh(city.graph);
@@ -192,26 +196,26 @@ export function buildFlatWorld({ shadowSize = 4096, shadowDist = 46 } = {}) {
    * Updates celestial orbits, active Sun/Moon directional light, shadow frustum,
    * street light shadow spotlight, hemisphere ambient light, and sky/fog color.
    */
-  const updateEnvironment = (timeOfDay, targetPos, scene) => {
+  const updateEnvironment = (timeOfDay, targetPos, scene, camera = null, dt = 1 / 60) => {
     const atmo = sampleAtmosphere(timeOfDay);
 
-    // Celestial angle around Y/Z
-    const theta = atmo.t * Math.PI * 2 - Math.PI * 0.5;
+    // Celestial solar orbit angle: t=0.0 (dawn), t=0.25 (noon zenith), t=0.50 (sunset), t=0.75 (midnight)
+    const theta = atmo.t * Math.PI * 2;
     const sinElev = Math.sin(theta);
-    const cosElev = Math.cos(theta);
+    const cosAzim = Math.cos(theta);
 
     let lightOffsetX, lightOffsetY, lightOffsetZ;
 
     if (!atmo.isNight) {
       // Sun orbit vector
-      lightOffsetX = cosElev * 165;
+      lightOffsetX = cosAzim * 165;
       lightOffsetY = Math.max(25, sinElev * 145);
-      lightOffsetZ = sinElev * 125 + 35;
+      lightOffsetZ = cosAzim * 35 + 25;
     } else {
       // Moon orbit vector on opposite hemisphere
-      lightOffsetX = -cosElev * 160;
+      lightOffsetX = -cosAzim * 160;
       lightOffsetY = Math.max(35, -sinElev * 140);
-      lightOffsetZ = -sinElev * 120 - 30;
+      lightOffsetZ = -cosAzim * 30 - 25;
     }
 
     // Position active celestial shadow light over current focus position (player or camera)
@@ -291,12 +295,15 @@ export function buildFlatWorld({ shadowSize = 4096, shadowDist = 46 } = {}) {
       cityGroup.updateCityLighting(atmo.nightFactor);
     }
 
+    // Update dynamic celestial sky (Sun, Moon, Stars, drifting Clouds)
+    celestialSky.update(dt, timeOfDay, targetPos, atmo, camera);
+
     return atmo;
   };
 
   return {
     root, sun, streetSpot, fill, fillB, hemi,
-    vegetation, city, get cityGroup() { return cityGroup; }, obstacles, roadLift,
+    vegetation, city, celestialSky, get cityGroup() { return cityGroup; }, obstacles, roadLift,
     updateEnvironment,
     loadVegetation, loadCity,
   };

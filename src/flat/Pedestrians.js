@@ -247,7 +247,17 @@ export class Pedestrians {
         o.castShadow = true;
         o.receiveShadow = true;
         const map = o.material ? o.material.map : null;
-        o.material = celMaterial({ map });
+        if (map) {
+          map.colorSpace = THREE.SRGBColorSpace;
+          map.needsUpdate = true;
+        }
+        o.material = celMaterial({
+          map,
+          transparent: false,
+          opacity: 1.0,
+          depthWrite: true,
+          depthTest: true,
+        });
       });
       scene.scale.multiplyScalar(PED_HEIGHT / RIG_HEIGHT);
       this.models.push(scene);

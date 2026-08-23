@@ -9,15 +9,14 @@ Add Lights to vehicles, spread light infront of it, increase visibility in spots
 Add waves in oceans and beaches, reaching the end of beaches waves.
 
 
-fix the junction road foothpath upper part is not visible gray and visible in beneath the footpath.
-
 pedestrians seem like translucent, increase its opacity.
 
 Add clouds sfx in the sky and also sun and moon with stars at night.
 
-Fix the lands where roads touchs with mountains vehecle stuck in to the road problem is with the mesh and physics.
 
 Add blur on outer side of the screen and white splashes after exceeding the speed by 80 km/h.
+
+In mobile on click to map open map and have back button, in race start screen add reload button to generate new tracks.
 
 ---
 

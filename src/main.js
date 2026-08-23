@@ -212,7 +212,7 @@ class Game {
     this.buildCars();
     this.timeOfDay = 0.25;
     if (this.world?.updateEnvironment) {
-      this.world.updateEnvironment(this.timeOfDay, this.player.pos, this.scene);
+      this.world.updateEnvironment(this.timeOfDay, this.player.pos, this.scene, this.camera, 0);
     }
 
     this.touch = new Touch();
@@ -297,6 +297,65 @@ class Game {
     };
     addEventListener('pointerdown', wake, { once: true });
     addEventListener('keydown', wake, { once: true });
+
+    // Interactive pointer clicks on Minimap, Fullscreen Map Back button, and Race Setup reload
+    const handleUIPointer = (e) => {
+      const x = e.clientX, y = e.clientY;
+      if (this.showMap) {
+        // Tapping Back button or anywhere in map view closes map
+        this.showMap = false;
+        return;
+      }
+      if (!this.paused) {
+        // Check if minimap was clicked
+        const isMobile = this.touch?.live;
+        const r = isMobile ? 64 : 74;
+        const pad = isMobile ? 18 : 24;
+        const cx = isMobile ? (window.innerWidth - pad - r) : (pad + r);
+        const cy = isMobile ? (pad + r) : (window.innerHeight - pad - r);
+        if (Math.hypot(x - cx, y - cy) <= r + 12) {
+          this.showMap = true;
+          return;
+        }
+      } else if (this.menu?.view === 'race') {
+        const w = window.innerWidth, h = window.innerHeight;
+        const mapSize = Math.min(340, h * 0.52, w * 0.38);
+        const mapX = Math.max(24, w / 2 - mapSize - 36);
+        const mapY = h / 2 - mapSize / 2 + 8;
+        const cx = mapX + mapSize / 2;
+        const reloadW = Math.min(180, mapSize * 0.85);
+        const reloadH = 34;
+        const reloadX = cx - reloadW / 2;
+        const reloadY = mapY + mapSize + 30;
+        // Check if Reload button or preview map was clicked
+        if ((x >= reloadX && x <= reloadX + reloadW && y >= reloadY && y <= reloadY + reloadH) ||
+            Math.hypot(x - cx, y - (mapY + mapSize / 2)) <= mapSize / 2) {
+          this.menu.index = 4;
+          this._previewRace(true);
+          return;
+        }
+        // Check if options on the right were clicked
+        const optX = mapX + mapSize + 36;
+        const rowTop = mapY + 18;
+        for (let k = 0; k < 6; k++) {
+          const ry = rowTop + k * 36;
+          if (x >= optX - 24 && x <= optX + 280 && y >= ry - 16 && y <= ry + 16) {
+            this.menu.index = k;
+            if (k === 4) this._previewRace(true);
+            else if (k === 5) this._startRace();
+            else {
+              const s = this.raceSetup;
+              if (k === 0) s.vehicle = (s.vehicle + 1) % VEHICLES.length;
+              else if (k === 1) { s.lengthIdx = (s.lengthIdx + 1) % RACE_LENGTHS.length; this._previewRace(true); }
+              else if (k === 2) { s.laps = (s.laps + 1) % (RACE_MAX_LAPS + 1); this._previewRace(true); }
+              else if (k === 3) s.difficulty = (s.difficulty + 1) % RACE_DIFFS.length;
+            }
+            return;
+          }
+        }
+      }
+    };
+    window.addEventListener('pointerdown', handleUIPointer);
 
     this.hud = new Hud(document.getElementById('hud'), this.world?.city?.graph);
     this.hud.touch = this.touch;
@@ -537,8 +596,11 @@ class Game {
       offRoad: p.offRoad,
       airborne: p.airborne,
       landingForce: p.landingForce,
-      /* No ocean in this world — push the ambience's surf past hearing. */
-      shoreDistance: 1e9, shoreDrop: 0, oceanSide: 1, openness: 0,
+      /* Coastal ambient surf & open sky breeze */
+      shoreDistance: Math.max(0, 1800 - Math.hypot(p.pos.x - 3000, p.pos.z - 0)),
+      shoreDrop: Math.max(0, p.pos.y),
+      oceanSide: Math.sign(p.pos.x - 3000),
+      openness: 1.0,
     });
 
     this.hud.race = this.race ? this.race.hud() : null;
@@ -689,7 +751,7 @@ class Game {
     const i = this.input;
     const s = this.raceSetup;
     this._previewRace(false);
-    const rows = 5; /* vehicle, length, laps, difficulty, START */
+    const rows = 6; /* vehicle, length, laps, difficulty, reload, START */
     if (i.resetPressed) {
       this._previewRace(true);
       return;
@@ -708,9 +770,15 @@ class Game {
         this._previewRace(true);
       } else if (m.index === 3) {
         s.difficulty = (s.difficulty + dir + RACE_DIFFS.length) % RACE_DIFFS.length;
+      } else if (m.index === 4) {
+        this._previewRace(true);
       }
-    } else if (i.confirmPressed && m.index === 4) {
-      this._startRace();
+    } else if (i.confirmPressed) {
+      if (m.index === 4) {
+        this._previewRace(true);
+      } else if (m.index === 5) {
+        this._startRace();
+      }
     }
   }
 
@@ -833,7 +901,7 @@ class Game {
       ? this.camera.position
       : (this.player ? this.player.pos : null);
     if (this.world?.updateEnvironment) {
-      this.world.updateEnvironment(this.timeOfDay, focusPos, this.scene);
+      this.world.updateEnvironment(this.timeOfDay, focusPos, this.scene, this.camera, dt);
     }
   }
 
@@ -1349,6 +1417,7 @@ class Hud {
     this.playerYaw = playerYaw;
     this.activeRace = race;
     this.showMap = showMap;
+    if (this.touch) this.touch.setMapMode(showMap);
     this._clock += dt;
     if (race?.results?.medal) this.medalT = Math.min(1, this.medalT + dt / 0.85);
     else this.medalT = 0;
@@ -1463,6 +1532,11 @@ class Hud {
     const L = tc.layout;
     if (!L) return;
 
+    if (tc.inMap) {
+      if (L.mapBackBtn) this._drawTouchButton(ctx, L.mapBackBtn, L.mapBackBtn.label, false, 'gold');
+      return;
+    }
+
     if (tc.inMenu) {
       // Menu D-pad
       this._drawTouchButton(ctx, L.menuUp, L.menuUp.label, tc.menuUpPressed, 'gold');
@@ -1474,18 +1548,17 @@ class Hud {
       this._drawTouchButton(ctx, L.menuConfirm, L.menuConfirm.label, tc.confirmPressed, 'green');
       this._drawTouchButton(ctx, L.menuBack, L.menuBack.label, tc.pausePressed, 'red');
     } else {
-      // Top-Left Pause & Map Buttons
+      // Top-Left Pause Button
       this._drawTouchButton(ctx, L.pauseBtn, L.pauseBtn.label, tc.pausePressed, 'gold');
-      if (L.mapBtn) this._drawTouchButton(ctx, L.mapBtn, L.mapBtn.label, tc.mapPressed || this.showMap, 'gold');
 
       // Bottom-Left Steering Buttons
       this._drawTouchButton(ctx, L.leftBtn, L.leftBtn.label, tc.leftPressed, 'gold');
       this._drawTouchButton(ctx, L.rightBtn, L.rightBtn.label, tc.rightPressed, 'gold');
 
       // Bottom-Right Pedals & Handbrake
-      this._drawTouchButton(ctx, L.handbrakeBtn, L.handbrakeBtn.label, tc.handbrakePressed, 'red');
-      this._drawTouchButton(ctx, L.brakePedal, L.brakePedal.label, tc.brakePressed, 'red');
       this._drawTouchButton(ctx, L.gasPedal, L.gasPedal.label, tc.throttlePressed, 'green');
+      this._drawTouchButton(ctx, L.brakePedal, L.brakePedal.label, tc.brakePressed, 'red');
+      this._drawTouchButton(ctx, L.handbrakeBtn, L.handbrakeBtn.label, tc.handbrakePressed, 'gold');
     }
   }
 
@@ -1816,18 +1889,28 @@ class Hud {
     ctx.fillStyle = '#f0e6d8';
     ctx.fillText(isRace ? 'TACTICAL RACE MAP' : 'CITY MAP — OPEN ROAM', cardX + 22, cardY + 28);
 
-    ctx.textAlign = 'right';
-    ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
-    ctx.fillStyle = '#c9b8a5';
-    if (isRace) {
-      const modeLabel = route.coast ? 'BEACH RING' : (route.loop ? 'CIRCUIT' : 'SPRINT');
-      const lapStr = this.activeRace.loop
-        ? `LAP ${this.activeRace.playerSlot.lap + 1}/${this.activeRace.laps}`
-        : `${Math.round(route.length || 0)}M SPRINT`;
-      ctx.fillText(`${modeLabel} • ${lapStr}`, cardX + cardW - 22, cardY + 28);
-    } else {
-      ctx.fillText(isMobile ? '[MAP] CLOSE' : '[M] CLOSE MAP', cardX + cardW - 22, cardY + 28);
-    }
+    // Back / Close Button in header
+    const backW = isMobile ? 88 : 105;
+    const backH = 32;
+    const backX = cardX + cardW - backW - 18;
+    const backY = cardY + 12;
+
+    ctx.save();
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(backX, backY, backW, backH, 8);
+    else ctx.rect(backX, backY, backW, backH);
+    ctx.fillStyle = 'rgba(255, 184, 0, 0.22)';
+    ctx.fill();
+    ctx.strokeStyle = '#ffd54a';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+
+    ctx.font = '700 12px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = '#ffd54a';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('◀ BACK', backX + backW / 2, backY + backH / 2);
+    ctx.restore();
 
     // 3. Map Viewport Dimensions
     const mapPadTop = 48;
@@ -2059,7 +2142,7 @@ class Hud {
     ctx.textBaseline = 'middle';
     ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(240, 230, 216, 0.75)';
-    ctx.fillText(isMobile ? 'TAP [MAP] OR TOUCH OUTSIDE TO CLOSE' : 'PRESS [M] OR [ESC] TO CLOSE MAP', cardX + cardW / 2, cardY + cardH - 18);
+    ctx.fillText(isMobile ? 'TAP [BACK] OR TOUCH OUTSIDE TO CLOSE' : 'PRESS [M] OR [ESC] TO CLOSE MAP', cardX + cardW / 2, cardY + cardH - 18);
 
     ctx.restore();
   }
@@ -2144,13 +2227,15 @@ class Hud {
       ['LENGTH', RACE_LENGTH_LABELS[s.lengthIdx] || ''],
       ['LAPS', lapsLabel],
       ['DIFFICULTY', RACE_DIFF_LABELS[s.difficulty] || ''],
-      ['START RACE', ''],
+      ['RELOAD TRACK 🔄', 'GENERATE NEW'],
+      ['START RACE 🏁', ''],
     ];
 
     const mapSize = Math.min(340, h * 0.52, w * 0.38);
     const mapX = Math.max(24, w / 2 - mapSize - 36);
     const mapY = h / 2 - mapSize / 2 + 8;
     const optX = mapX + mapSize + 36;
+    const cx = mapX + mapSize / 2;
 
     ctx.font = '700 28px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = '#f0e6d8';
@@ -2160,6 +2245,30 @@ class Hud {
     ctx.shadowBlur = 0;
 
     this._drawRacePreviewMap(ctx, mapX, mapY, mapSize, menu.preview?.route);
+
+    // Interactive Reload Track Button below preview map
+    const reloadW = Math.min(180, mapSize * 0.85);
+    const reloadH = 34;
+    const reloadX = cx - reloadW / 2;
+    const reloadY = mapY + mapSize + 30;
+    const isReloadSel = menu.index === 4;
+
+    ctx.save();
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(reloadX, reloadY, reloadW, reloadH, 8);
+    else ctx.rect(reloadX, reloadY, reloadW, reloadH);
+    ctx.fillStyle = isReloadSel ? 'rgba(255, 184, 0, 0.28)' : 'rgba(240, 230, 216, 0.14)';
+    ctx.fill();
+    ctx.strokeStyle = isReloadSel ? '#ffd54a' : 'rgba(240, 230, 216, 0.40)';
+    ctx.lineWidth = isReloadSel ? 2.0 : 1.4;
+    ctx.stroke();
+
+    ctx.font = '700 12px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = isReloadSel ? '#ffd54a' : '#f0e6d8';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🔄 GENERATE NEW TRACK', cx, reloadY + reloadH / 2);
+    ctx.restore();
 
     ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
     const rowTop = mapY + 18;
@@ -2179,8 +2288,8 @@ class Hud {
 
     ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(240,230,216,0.55)';
-    ctx.fillText('UP / DOWN  row    LEFT / RIGHT  value    R  new track    ENTER  start    ESC  back',
-      w / 2, Math.min(h - 28, mapY + mapSize + 28));
+    ctx.fillText('UP / DOWN  row    LEFT / RIGHT  value    R / RELOAD  new track    ENTER  start    ESC  back',
+      w / 2, Math.min(h - 24, reloadY + reloadH + 24));
   }
 
   _drawRacePreviewMap(ctx, x, y, size, route) {

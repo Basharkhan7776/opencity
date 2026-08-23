@@ -73,6 +73,7 @@ export class Touch {
     this.cameraDragging = false;
 
     this.inMenu = false;
+    this.inMap = false;
     this.w = typeof window !== 'undefined' ? window.innerWidth : 800;
     this.h = typeof window !== 'undefined' ? window.innerHeight : 600;
     this.insets = safeInsets();
@@ -102,6 +103,11 @@ export class Touch {
 
   setMenuMode(inMenu) {
     this.inMenu = !!inMenu;
+    this._layout();
+  }
+
+  setMapMode(inMap) {
+    this.inMap = !!inMap;
     this._layout();
   }
 
@@ -163,7 +169,18 @@ export class Touch {
     const handbrakeBtn = { id: 'handbrake', x: right - hbW, y: bottom - gasH - 12 - hbH, w: hbW, h: hbH, label: 'P', kind: 'handbrake' };
 
     const pauseBtn = { id: 'pause', x: left, y: top, w: 52, h: 52, label: '⏸', kind: 'pause' };
-    const mapBtn = { id: 'map', x: left + 62, y: top, w: 52, h: 52, label: 'MAP', kind: 'map' };
+
+    // Minimap radar touch target (top-right on mobile)
+    const mmR = 64;
+    const mmPad = 18;
+    const minimapBtn = { id: 'minimap', x: w - mmPad - mmR * 2, y: mmPad, w: mmR * 2, h: mmR * 2, label: 'MAP', kind: 'map' };
+
+    // Fullscreen Map Back Button
+    const cardW = Math.min(w - 24, 780);
+    const cardH = Math.min(h - 24, 680);
+    const cardX = (w - cardW) / 2;
+    const cardY = (h - cardH) / 2;
+    const mapBackBtn = { id: 'mapBack', x: cardX + cardW - 100, y: cardY + 12, w: 88, h: 36, label: '◀ BACK', kind: 'map' };
 
     // --- Menu Controls ---
     const dpadSize = Math.max(54, Math.min(64, short * 0.16));
@@ -178,7 +195,7 @@ export class Touch {
     const menuBack = { id: 'back', x: right - actW, y: bottom - actH, w: actW, h: actH, label: 'BACK', kind: 'menu' };
 
     this.L = {
-      leftBtn, rightBtn, gasPedal, brakePedal, handbrakeBtn, pauseBtn, mapBtn,
+      leftBtn, rightBtn, gasPedal, brakePedal, handbrakeBtn, pauseBtn, minimapBtn, mapBackBtn,
       menuUp, menuDown, menuLeft, menuRight, menuConfirm, menuBack,
     };
   }
@@ -198,7 +215,12 @@ export class Touch {
       const x = t.clientX, y = t.clientY;
       let role = 'camera', rect = null;
 
-      if (this.inMenu) {
+      if (this.inMap) {
+        // Tapping anywhere or on the Back button closes map
+        role = 'map';
+        rect = L.mapBackBtn;
+        this._mapPressed = true;
+      } else if (this.inMenu) {
         if (this._hit(L.menuUp, x, y)) { role = 'menuUp'; rect = L.menuUp; }
         else if (this._hit(L.menuDown, x, y)) { role = 'menuDown'; rect = L.menuDown; }
         else if (this._hit(L.menuLeft, x, y)) { role = 'menuLeft'; rect = L.menuLeft; }
@@ -207,7 +229,7 @@ export class Touch {
         else if (this._hit(L.menuBack, x, y)) { role = 'pause'; rect = L.menuBack; }
       } else {
         if (this._hit(L.pauseBtn, x, y)) { role = 'pause'; rect = L.pauseBtn; }
-        else if (this._hit(L.mapBtn, x, y)) { role = 'map'; rect = L.mapBtn; }
+        else if (this._hit(L.minimapBtn, x, y)) { role = 'map'; rect = L.minimapBtn; }
         else if (this._hit(L.leftBtn, x, y)) { role = 'left'; rect = L.leftBtn; }
         else if (this._hit(L.rightBtn, x, y)) { role = 'right'; rect = L.rightBtn; }
         else if (this._hit(L.gasPedal, x, y)) { role = 'throttle'; rect = L.gasPedal; }
@@ -369,6 +391,7 @@ export class Touch {
     return {
       rotate: this.h > this.w,
       inMenu: this.inMenu,
+      inMap: this.inMap,
       insets: { ...this.insets },
       steer: this.steer,
       leftPressed: activeRoles.has('left'),

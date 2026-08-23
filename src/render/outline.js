@@ -122,17 +122,21 @@ const DESERT_GRADE = Object.freeze({
    noise past a couple of hundred metres, and it inks the middle distance with
    scribble. */
 const PRE_VERT = /* glsl */`
+#include <common>
+#include <skinning_pars_vertex>
 varying vec3 vViewPos;
 varying vec2 vUv;
 void main() {
   vUv = uv;
-  vec3 transformed = position;
+  #include <skinbase_vertex>
+  #include <begin_vertex>
+  #include <skinning_vertex>
+  #include <project_vertex>
   #ifdef USE_INSTANCING
     transformed = (instanceMatrix * vec4(transformed, 1.0)).xyz;
   #endif
-  vec4 mv = modelViewMatrix * vec4(transformed, 1.0);
-  vViewPos = mv.xyz;
-  gl_Position = projectionMatrix * mv;
+  vViewPos = mvPosition.xyz;
+  gl_Position = projectionMatrix * mvPosition;
 }`;
 
 /* Distance and an object class share the alpha channel.
@@ -1139,22 +1143,16 @@ export class CelPipeline {
     /* Normals prepass. The background and the fog are suppressed: a fogged
        normal is a blend of a surface and the fog colour, which decodes to a
        direction that belongs to neither, and every distant crease would ink
-       according to how foggy it was rather than how sharp it was.
-       Skinned meshes (characters) are excluded from the static overrideMaterial
-       pass so Three.js does not render their unskinned T-pose bind-pose mesh
-       into the normal buffer, eliminating phantom second-body silhouettes. */
+       according to how foggy it was rather than how sharp it was. */
     if (this.inkEnabled) {
       const bg = this.scene.background, fog = this.scene.fog;
       this.scene.background = null;
       this.scene.fog = null;
 
-      const skinned = [];
-      this.scene.traverse(o => {
-        if (o.isSkinnedMesh && o.visible) {
-          o.visible = false;
-          skinned.push(o);
-        }
-      });
+      // Exclude celestial sky (clouds, sun, moon, stars) from normals prepass so ink shader has no borders on sky elements
+      const skyObj = this.scene.getObjectByName('celestial-sky-2d');
+      const skyVis = skyObj ? skyObj.visible : false;
+      if (skyObj) skyObj.visible = false;
 
       this.scene.overrideMaterial = this.normalMat;
       r.setRenderTarget(this.normals);
@@ -1162,9 +1160,7 @@ export class CelPipeline {
       r.render(this.scene, this.camera);
       this.scene.overrideMaterial = null;
 
-      for (let i = 0; i < skinned.length; i++) {
-        skinned[i].visible = true;
-      }
+      if (skyObj) skyObj.visible = skyVis;
 
       this._renderPrepassOptIns(r);
       this.scene.background = bg;
