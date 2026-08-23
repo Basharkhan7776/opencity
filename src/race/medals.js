@@ -5,13 +5,33 @@
 export const MEDAL_KEY = 'opencity.medals';
 
 export const MEDAL_RANKS = [
-  { id: 'bronze',    name: 'BRONZE',    color: '#c47a3a', need: 6 },
-  { id: 'silver',    name: 'SILVER',    color: '#c5c8ce', need: 8 },
-  { id: 'gold',      name: 'GOLD',      color: '#f0b429', need: 10 },
-  { id: 'platinum',  name: 'PLATINUM',  color: '#d4d2e4', need: 12 },
-  { id: 'ruby',      name: 'RUBY',      color: '#c23b4a', need: 14 },
-  { id: 'sapphire',  name: 'SAPPHIRE',  color: '#2f7fbd', need: 16 },
-  { id: 'diamond',   name: 'DIAMOND',   color: '#9eecf2', need: 0 },
+  // Bronze I, II, III
+  { id: 'bronze_1',    name: 'BRONZE I',    color: '#c47a3a', need: 5 },
+  { id: 'bronze_2',    name: 'BRONZE II',   color: '#c47a3a', need: 6 },
+  { id: 'bronze_3',    name: 'BRONZE III',  color: '#c47a3a', need: 7 },
+
+  // Silver I, II, III
+  { id: 'silver_1',    name: 'SILVER I',    color: '#c5c8ce', need: 7 },
+  { id: 'silver_2',    name: 'SILVER II',   color: '#c5c8ce', need: 8 },
+  { id: 'silver_3',    name: 'SILVER III',  color: '#c5c8ce', need: 9 },
+
+  // Gold I, II, III
+  { id: 'gold_1',      name: 'GOLD I',      color: '#f0b429', need: 9 },
+  { id: 'gold_2',      name: 'GOLD II',     color: '#f0b429', need: 10 },
+  { id: 'gold_3',      name: 'GOLD III',    color: '#f0b429', need: 11 },
+
+  // Platinum I, II, III
+  { id: 'platinum_1',  name: 'PLATINUM I',  color: '#d4d2e4', need: 11 },
+  { id: 'platinum_2',  name: 'PLATINUM II', color: '#d4d2e4', need: 12 },
+  { id: 'platinum_3',  name: 'PLATINUM III',color: '#d4d2e4', need: 13 },
+
+  // Diamond I, II, III
+  { id: 'diamond_1',   name: 'DIAMOND I',   color: '#9eecf2', need: 13 },
+  { id: 'diamond_2',   name: 'DIAMOND II',  color: '#9eecf2', need: 15 },
+  { id: 'diamond_3',   name: 'DIAMOND III', color: '#9eecf2', need: 17 },
+
+  // Champion pinnacle
+  { id: 'champion',    name: 'CHAMPION',    color: '#ff5470', need: 0 },
 ];
 
 const LAST = MEDAL_RANKS.length - 1;

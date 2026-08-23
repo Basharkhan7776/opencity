@@ -38,60 +38,92 @@ function buildAdj(graph) {
   return { byId, adj };
 }
 
+function quantizeDir(dx, dz) {
+  const ang = Math.atan2(dz, dx);
+  return Math.round((ang / Math.PI) * 4 + 4) % 8;
+}
+
 /**
- * Directionally biased Dijkstra that strongly penalizes sharp turns/U-turns
- * and rewards staying straight on wide main avenues.
+ * Direction-aware Dijkstra that strictly preserves straight-line momentum,
+ * heavily penalizes zigzags / 90-degree kinks, and prioritizes wide main boulevards.
  */
 function dijkstraSmooth(adj, byId, from, to, initialDir = null, useCoast = false) {
-  if (from === to) return { ids: [from], length: 0 };
+  if (from === to) return { ids: [from], length: 0, endDir: initialDir };
   const dist = new Map();
   const prev = new Map();
-  const q = [[0, from, initialDir]];
-  dist.set(from, 0);
+  const q = [[0, from, initialDir, 'root']];
+
+  const getDirIdx = (d) => (d ? quantizeDir(d.x, d.z) : 8);
+  const startKey = `${from}_${getDirIdx(initialDir)}`;
+  dist.set(startKey, 0);
+
+  let bestEndKey = null;
+  let bestEndCost = Infinity;
 
   while (q.length) {
     q.sort((a, b) => a[0] - b[0]);
-    const [d, u, curDir] = q.shift();
-    if (u === to) break;
-    if (d > (dist.get(u) ?? Infinity) + 1e-4) continue;
+    const [d, u, curDir, parentKey] = q.shift();
+    const curDirIdx = getDirIdx(curDir);
+    const uKey = `${u}_${curDirIdx}`;
+
+    if (u === to) {
+      if (d < bestEndCost) {
+        bestEndCost = d;
+        bestEndKey = uKey;
+      }
+      break;
+    }
+
+    if (d > (dist.get(uKey) ?? Infinity) + 1e-4) continue;
     const uNode = byId.get(u);
     const nbrs = adj.get(u) || [];
+
     for (const n of nbrs) {
       const vNode = byId.get(n.to);
       if (!vNode) continue;
       const dx = vNode.x - uNode.x;
       const dz = vNode.z - uNode.z;
       const segLen = Math.hypot(dx, dz) || 1;
-      const dir = { x: dx / segLen, z: dz / segLen };
+      const nextDir = { x: dx / segLen, z: dz / segLen };
+      const nextDirIdx = getDirIdx(nextDir);
+      const vKey = `${n.to}_${nextDirIdx}`;
 
       let turnPenalty = 0;
       if (curDir) {
-        const dot = curDir.x * dir.x + curDir.z * dir.z;
-        if (dot < -0.2) turnPenalty = 300; // U-turn
-        else if (dot < 0.7) turnPenalty = (1 - dot) * 25; // sharp turn
+        const dot = curDir.x * nextDir.x + curDir.z * nextDir.z;
+        if (dot < -0.2) turnPenalty = 500; // U-turn
+        else if (dot < 0.2) turnPenalty = 140; // 90 degree turn (heavily penalized to prevent stair-stepping)
+        else if (dot < 0.85) turnPenalty = 45; // slight bend
+        else turnPenalty = -12; // straight avenue momentum reward
       }
+
       const midR = Math.hypot(
         (uNode.x + vNode.x) * 0.5 - CENTER.x,
         (uNode.z + vNode.z) * 0.5 - CENTER.z,
       );
-      const coastBonus = useCoast && midR > RESIDENTIAL_R + 20 ? 8 : 0;
-      const cost = n.length + turnPenalty * 0.5 - (n.width >= 12 ? 3.5 : 0) - coastBonus;
-      const nd = d + Math.max(n.length * 0.4, cost);
-      if (nd < (dist.get(n.to) ?? Infinity)) {
-        dist.set(n.to, nd);
-        prev.set(n.to, u);
-        q.push([nd, n.to, dir]);
+      const coastBonus = useCoast && midR > RESIDENTIAL_R + 20 ? 12 : 0;
+      const widthBonus = n.width >= 12 ? 22 : (n.width >= 10 ? 10 : 0);
+      const cost = Math.max(4, n.length + turnPenalty - widthBonus - coastBonus);
+      const nd = d + cost;
+
+      if (nd < (dist.get(vKey) ?? Infinity)) {
+        dist.set(vKey, nd);
+        prev.set(vKey, { parentNode: u, parentKey: uKey, dir: nextDir });
+        q.push([nd, n.to, nextDir, uKey]);
       }
     }
   }
 
-  if (!prev.has(to) && from !== to) return null;
+  if (!bestEndKey && from !== to) return null;
   const ids = [to];
-  let c = to;
-  while (c !== from) {
-    c = prev.get(c);
-    if (c == null) return null;
-    ids.push(c);
+  let curKey = bestEndKey;
+  let lastDir = null;
+  while (curKey && curKey !== 'root') {
+    const p = prev.get(curKey);
+    if (!p) break;
+    if (!lastDir) lastDir = p.dir;
+    ids.push(p.parentNode);
+    curKey = p.parentKey;
   }
   ids.reverse();
 
@@ -100,59 +132,141 @@ function dijkstraSmooth(adj, byId, from, to, initialDir = null, useCoast = false
     const link = (adj.get(ids[i - 1]) || []).find(x => x.to === ids[i]);
     if (link) actualLen += link.length;
   }
-  return { ids, length: actualLen };
+  return { ids, length: actualLen, endDir: lastDir };
 }
 
 /**
- * Generate a Flowing Urban Circuit strictly within the city boundaries (never outer ring road).
+ * Find the nearest city road node to a target position, prioritizing wide main avenues and major intersections.
  */
-function generateLargeCircleRoute(adj, byId, targetLength, r) {
-  const maxR = RESIDENTIAL_R - 10;
-  const minR = 60;
-  let idealR = clamp(targetLength / (Math.PI * 2), minR, maxR);
-  const dir = r() > 0.5 ? 1 : -1; // Clockwise or counter-clockwise
-  const startAng = r() * Math.PI * 2;
-  const numWaypoints = targetLength > 1200 ? 8 : 4;
+function findNearestCityNode(adj, byId, targetX, targetZ, maxR = RESIDENTIAL_R - 15, excludeIds = new Set()) {
+  let bestNode = null, bestScore = Infinity;
+  for (const n of byId.values()) {
+    if (excludeIds.has(n.id)) continue;
+    const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
+    if (rr > maxR) continue;
+    const nbrs = adj.get(n.id) || [];
+    if (nbrs.length < 2) continue;
+    const d = Math.hypot(n.x - targetX, n.z - targetZ);
+    const hasAvenue = nbrs.some(nb => nb.width >= 12);
+    const isInter = nbrs.length >= 3;
+    const score = d - (hasAvenue ? 50 : 0) - (isInter ? 25 : 0);
+    if (score < bestScore) {
+      bestScore = score;
+      bestNode = n.id;
+    }
+  }
+  return bestNode;
+}
 
-  const waypoints = [];
-  for (let i = 0; i < numWaypoints; i++) {
-    const a = startAng + dir * ((Math.PI * 2 * i) / numWaypoints);
-    const targetX = CENTER.x + Math.cos(a) * idealR;
-    const targetZ = CENTER.z + Math.sin(a) * idealR;
+/**
+ * Generate a Flowing Urban Circuit located anywhere across the city,
+ * with loop complexity scaling by difficulty:
+ * - Easy: Single clean flowing loop with long straights and smooth turns (1 loop).
+ * - Medium: 1 Extra Loop / Figure-8 / 2-lobed crossover loop (2 connected loops).
+ * - Hard: Multiple loops / Trefoil 3-leaf cloverleaf / multi-sector grand prix.
+ */
+function generateUrbanCircuit(adj, byId, targetLength, difficulty = 'medium', r) {
+  const maxCityR = RESIDENTIAL_R - 15;
 
-    let bestNode = null, bestDist = Infinity;
-    for (const n of byId.values()) {
-      const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
-      if (rr > RESIDENTIAL_R + 10) continue; // Strictly exclude outer ring road
-      if ((adj.get(n.id) || []).length < 2) continue;
-      const d = Math.hypot(n.x - targetX, n.z - targetZ);
-      if (d < bestDist) {
-        bestDist = d;
-        bestNode = n.id;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const rotAng = r() * Math.PI * 2;
+    const dir = r() > 0.5 ? 1 : -1;
+
+    // Pick anchor center anywhere across the city
+    const maxOffset = Math.min(220, maxCityR * 0.55);
+    const centerOffDist = r() * maxOffset;
+    const centerOffAng = r() * Math.PI * 2;
+    const cx = CENTER.x + Math.cos(centerOffAng) * centerOffDist;
+    const cz = CENTER.z + Math.sin(centerOffAng) * centerOffDist;
+
+    const distFromCityCenter = Math.hypot(cx - CENTER.x, cz - CENTER.z);
+    const maxLocalR = Math.max(80, maxCityR - distFromCityCenter);
+
+    const rawWaypoints = [];
+
+    if (difficulty === 'easy') {
+      // Easy: 4–5 well-spaced waypoints forming a clean convex loop with long straights
+      const numPoints = clamp(Math.round(targetLength / 320), 4, 6);
+      const baseR = clamp(targetLength / (Math.PI * 2), 75, maxLocalR);
+      const aspect = 0.85 + r() * 0.3;
+      for (let i = 0; i < numPoints; i++) {
+        const t = dir * (i * Math.PI * 2 / numPoints);
+        const lx = Math.cos(t) * baseR * aspect;
+        const lz = Math.sin(t) * baseR;
+        const wx = cx + lx * Math.cos(rotAng) - lz * Math.sin(rotAng);
+        const wz = cz + lx * Math.sin(rotAng) + lz * Math.cos(rotAng);
+        rawWaypoints.push({ x: wx, z: wz });
+      }
+    } else if (difficulty === 'medium') {
+      // Medium: 6–8 well-spaced waypoints forming a Figure-8 / 2-lobed connected loop
+      const numPoints = clamp(Math.round(targetLength / 260), 6, 8);
+      const baseR = clamp(targetLength / (Math.PI * 3.0), 80, maxLocalR * 0.95);
+      for (let i = 0; i < numPoints; i++) {
+        const t = dir * (i * Math.PI * 2 / numPoints);
+        const denom = 1 + Math.sin(t) * Math.sin(t);
+        const lx = (baseR * Math.cos(t)) / denom;
+        const lz = (baseR * Math.sin(t) * Math.cos(t) * 1.5) / denom;
+        const wx = cx + lx * Math.cos(rotAng) - lz * Math.sin(rotAng);
+        const wz = cz + lx * Math.sin(rotAng) + lz * Math.cos(rotAng);
+        rawWaypoints.push({ x: wx, z: wz });
+      }
+    } else {
+      // Hard: 8–10 well-spaced waypoints forming a 3-lobed Trefoil cloverleaf loop
+      const lobes = 3;
+      const numPoints = clamp(Math.round(targetLength / 200), 8, 10);
+      const baseR = clamp(targetLength / (Math.PI * 3.8), 85, maxLocalR * 0.95);
+      for (let i = 0; i < numPoints; i++) {
+        const t = dir * (i * Math.PI * 2 / numPoints);
+        const rad = baseR * (0.72 + 0.40 * Math.cos(lobes * t));
+        const lx = Math.cos(t) * rad;
+        const lz = Math.sin(t) * rad;
+        const wx = cx + lx * Math.cos(rotAng) - lz * Math.sin(rotAng);
+        const wz = cz + lx * Math.sin(rotAng) + lz * Math.cos(rotAng);
+        rawWaypoints.push({ x: wx, z: wz });
       }
     }
-    if (bestNode && !waypoints.includes(bestNode)) waypoints.push(bestNode);
+
+    const waypoints = [];
+    const excludeIds = new Set();
+    for (const pt of rawWaypoints) {
+      const node = findNearestCityNode(adj, byId, pt.x, pt.z, maxCityR, excludeIds);
+      if (node != null && !waypoints.includes(node)) {
+        waypoints.push(node);
+        excludeIds.add(node);
+      }
+    }
+
+    if (waypoints.length < 3) continue;
+
+    let allIds = [];
+    let totalLen = 0;
+    let valid = true;
+    let runningDir = null;
+
+    for (let i = 0; i < waypoints.length; i++) {
+      const from = waypoints[i];
+      const to = waypoints[(i + 1) % waypoints.length];
+      const seg = dijkstraSmooth(adj, byId, from, to, runningDir, false);
+      if (!seg || seg.ids.length < 2) {
+        valid = false;
+        break;
+      }
+      runningDir = seg.endDir;
+      if (i === 0) allIds.push(...seg.ids);
+      else allIds.push(...seg.ids.slice(1));
+      totalLen += seg.length;
+    }
+
+    if (!valid || allIds.length < 3) continue;
+
+    if (allIds[0] !== allIds[allIds.length - 1]) {
+      allIds.push(allIds[0]);
+    }
+
+    return { ids: allIds, length: totalLen };
   }
 
-  if (waypoints.length < 3) return null;
-
-  let allIds = [];
-  let totalLen = 0;
-  for (let i = 0; i < waypoints.length; i++) {
-    const from = waypoints[i];
-    const to = waypoints[(i + 1) % waypoints.length];
-    const seg = dijkstraSmooth(adj, byId, from, to, null, false);
-    if (!seg || seg.ids.length < 2) return null;
-    if (i === 0) allIds.push(...seg.ids);
-    else allIds.push(...seg.ids.slice(1));
-    totalLen += seg.length;
-  }
-
-  if (allIds[0] !== allIds[allIds.length - 1]) {
-    allIds.push(allIds[0]);
-  }
-
-  return { ids: allIds, length: totalLen };
+  return null;
 }
 
 /**
@@ -406,8 +520,9 @@ export function generateRoute(graph, opts) {
   let isCoast = false;
 
   if (loop) {
-    // 1. Lap races are ALWAYS urban circuits within the city (never outer ring road)
-    res = generateLargeCircleRoute(adj, byId, target, r);
+    // 1. Lap races are urban circuits within the city with difficulty-based loop complexity
+    const difficulty = opts.difficulty || 'medium';
+    res = generateUrbanCircuit(adj, byId, target, difficulty, r);
   } else {
     // 2. Sprint races: alternate between Outer Ring Coast Sprint and Urban Straight Sprint (prefer coast for 5km/10km)
     const wantCoast = opts.coast != null ? !!opts.coast : (target >= 4000 ? true : r() < 0.50);

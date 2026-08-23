@@ -262,6 +262,8 @@ uniform float uVignetteStrength;
 uniform float uSpeedSaturation;
 uniform float uSpeedVignette;
 uniform float uSpeed;
+uniform float uSpeed80;
+uniform float uSpeedClock;
 
 uniform float uImpact;
 uniform vec2  uImpactAxis;
@@ -404,6 +406,32 @@ vec3 desertGrade(vec3 source) {
 
 void main() {
   vec3 col = texture2D(tColor, vUv).rgb;
+
+  vec2 toCenter = vUv - vec2(0.5);
+  float distCenter = length(toCenter);
+
+  // Speed >= 80 km/h: Dynamic Radial Motion Blur (radius contracts inward and blur intensifies with speed)
+  if (uSpeed80 > 0.001) {
+    // Inner clear radius contracts as speed increases: from 0.48 down to 0.14
+    float innerR = mix(0.48, 0.14, uSpeed80);
+    float outerR = mix(0.82, 0.52, uSpeed80);
+    float outerBlurMask = smoothstep(innerR, outerR, distCenter) * uSpeed80;
+
+    // Blur amount scales up significantly with speed
+    float blurStrength = 0.08 + 0.14 * uSpeed80;
+    float blurAmount = outerBlurMask * blurStrength;
+
+    vec3 blurCol = col * 0.18;
+    blurCol += texture2D(tColor, clamp(vUv - toCenter * (blurAmount * 0.14), 0.0, 1.0)).rgb * 0.16;
+    blurCol += texture2D(tColor, clamp(vUv - toCenter * (blurAmount * 0.28), 0.0, 1.0)).rgb * 0.15;
+    blurCol += texture2D(tColor, clamp(vUv - toCenter * (blurAmount * 0.44), 0.0, 1.0)).rgb * 0.14;
+    blurCol += texture2D(tColor, clamp(vUv - toCenter * (blurAmount * 0.60), 0.0, 1.0)).rgb * 0.13;
+    blurCol += texture2D(tColor, clamp(vUv - toCenter * (blurAmount * 0.76), 0.0, 1.0)).rgb * 0.12;
+    blurCol += texture2D(tColor, clamp(vUv - toCenter * (blurAmount * 0.90), 0.0, 1.0)).rgb * 0.11;
+    blurCol += texture2D(tColor, clamp(vUv - toCenter * (blurAmount * 1.00), 0.0, 1.0)).rgb * 0.09;
+    blurCol += texture2D(tColor, clamp(vUv + toCenter * (blurAmount * 0.15), 0.0, 1.0)).rgb * 0.07;
+    col = mix(col, blurCol, outerBlurMask);
+  }
 
   /* A heavy hit gets one short, directional registration error, like the
      colour plates of a screen print jumping out of alignment. The branch is
@@ -994,10 +1022,15 @@ export class CelPipeline {
         uSpeedSaturation: { value: DESERT_GRADE.speedSaturation },
         uSpeedVignette: { value: DESERT_GRADE.speedVignette },
         uSpeed: { value: 0 },
+        uSpeed80: { value: 0 },
+        uSpeedClock: { value: 0 },
         uImpact: { value: 0 },
         uImpactAxis: { value: this.impactAxis },
       },
     });
+
+    this.speed80 = 0;
+    this.speedClock = 0;
 
     const quad = new THREE.BufferGeometry();
     // A single oversized triangle, not two: no seam down the diagonal and one
@@ -1020,10 +1053,18 @@ export class CelPipeline {
   }
 
   update(dt, { speed = 0 } = {}) {
+    this.speedClock += dt;
     const t = Math.max(0, Math.min(1, (speed - 18) / 34));
     const target = this.speedEnabled ? t * t * (3 - 2 * t) : 0;
     const rate = target > this.speed ? 4.8 : 2.4;
     this.speed += (target - this.speed) * (1 - Math.exp(-rate * dt));
+
+    // Exceeding 80 km/h effect: speed is in m/s (80 km/h = 22.222 m/s)
+    const speedKmh = speed * 3.6;
+    const target80 = this.speedEnabled && speedKmh > 80 ? Math.min(1.0, (speedKmh - 80) / 60) : 0;
+    const rate80 = target80 > this.speed80 ? 5.5 : 3.0;
+    this.speed80 += (target80 - this.speed80) * (1 - Math.exp(-rate80 * dt));
+
     this.impact *= Math.exp(-8.5 * dt);
   }
 
@@ -1128,6 +1169,8 @@ export class CelPipeline {
     this.quadMat.uniforms.uGradeAmount.value = this.gradeEnabled ? 1 : 0;
     this.quadMat.uniforms.uVignetteAmount.value = this.vignetteEnabled ? 1 : 0;
     this.quadMat.uniforms.uSpeed.value = this.speedEnabled ? this.speed : 0;
+    this.quadMat.uniforms.uSpeed80.value = this.speedEnabled ? this.speed80 : 0;
+    this.quadMat.uniforms.uSpeedClock.value = this.speedClock;
     this.quadMat.uniforms.uImpact.value = this.impactEnabled ? this.impact : 0;
     this.quadMat.uniforms.uMottleAmp.value = this.mottleEnabled ? this.mottle : 0;
 

@@ -6,7 +6,6 @@ CPU vehecles will wiped out or hide while runnning in race and pedestrians fix i
 
 Add Lights to vehicles, spread light infront of it, increase visibility in spots, enable in night. Add day cycle of 30 minutes as option.
 
-Add waves in oceans touching beaches, reaching the end of beaches waves.
 
 
 

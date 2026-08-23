@@ -791,17 +791,20 @@ class Game {
     const stale = !this.racePreview
       || this.racePreview.lengthIdx !== s.lengthIdx
       || this.racePreview.laps !== s.laps
+      || this.racePreview.difficulty !== s.difficulty
       || !this.racePreview.route;
     if (!force && !stale) return;
     const route = generateRoute(graph, {
       length: RACE_LENGTHS[s.lengthIdx],
       loop: s.laps > 0,
+      difficulty: RACE_DIFFS[s.difficulty],
       seed: (Math.random() * 0xffffffff) >>> 0,
     });
     this.racePreview = {
       route,
       lengthIdx: s.lengthIdx,
       laps: s.laps,
+      difficulty: s.difficulty,
     };
   }
 
@@ -971,10 +974,12 @@ class Game {
       const route = this.racePreview?.route
         && this.racePreview.lengthIdx === s.lengthIdx
         && this.racePreview.laps === s.laps
+        && this.racePreview.difficulty === s.difficulty
         ? this.racePreview.route
         : generateRoute(graph, {
           length: RACE_LENGTHS[s.lengthIdx],
           loop: s.laps > 0,
+          difficulty: RACE_DIFFS[s.difficulty],
           seed: (Math.random() * 0xffffffff) >>> 0,
         });
       if (!route) return;
@@ -2479,18 +2484,25 @@ class Hud {
     const next = MEDAL_RANKS[medals.rank + 1];
     const fill = next ? fillOf(medals) : 1;
     ctx.save();
+    ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+    const textW = ctx.measureText(rank.name).width;
+    const bw = 90, bh = 6;
+    const totalW = 16 + textW + 10 + bw;
+    const startX = cx - totalW / 2;
+
     ctx.beginPath();
-    ctx.arc(cx - 78, y - 4, 7, 0, Math.PI * 2);
+    ctx.arc(startX + 6, y - 4, 6, 0, Math.PI * 2);
     ctx.fillStyle = rank.color;
     ctx.fill();
     ctx.lineWidth = 1.5;
     ctx.strokeStyle = '#241812';
     ctx.stroke();
-    ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+
     ctx.fillStyle = '#f0e6d8';
     ctx.textAlign = 'left';
-    ctx.fillText(rank.name, cx - 66, y);
-    const bw = 110, bh = 6, bx = cx + 8, by = y - 8;
+    ctx.fillText(rank.name, startX + 16, y);
+
+    const bx = startX + 16 + textW + 10, by = y - 8;
     ctx.fillStyle = 'rgba(36,24,18,0.55)';
     ctx.fillRect(bx, by, bw, bh);
     ctx.fillStyle = next ? next.color : rank.color;
