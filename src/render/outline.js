@@ -1149,10 +1149,14 @@ export class CelPipeline {
       this.scene.background = null;
       this.scene.fog = null;
 
-      // Exclude celestial sky (clouds, sun, moon, stars) from normals prepass so ink shader has no borders on sky elements
+      // Exclude celestial sky and light pools from normals prepass so ink shader has no borders on light effects
       const skyObj = this.scene.getObjectByName('celestial-sky-2d');
       const skyVis = skyObj ? skyObj.visible : false;
       if (skyObj) skyObj.visible = false;
+
+      const lightPools = this.scene.getObjectByName('street-light-pools');
+      const lightPoolsVis = lightPools ? lightPools.visible : false;
+      if (lightPools) lightPools.visible = false;
 
       this.scene.overrideMaterial = this.normalMat;
       r.setRenderTarget(this.normals);
@@ -1161,6 +1165,7 @@ export class CelPipeline {
       this.scene.overrideMaterial = null;
 
       if (skyObj) skyObj.visible = skyVis;
+      if (lightPools) lightPools.visible = lightPoolsVis;
 
       this._renderPrepassOptIns(r);
       this.scene.background = bg;

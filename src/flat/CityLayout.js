@@ -565,8 +565,10 @@ export function planCity(seed = CITY_SEED) {
   /* ---- Coast 1-lane ring (connected loop) ----------------------------- */
   const coastPts = [];
   const TAU = Math.PI * 2;
-  const largePeak = PEAKS[1]; // 120m tallest snowy mountain
+  const largePeak = PEAKS[1]; // 120m tallest snowy mountain (North West)
   const peakAng = Math.atan2(largePeak.z - CENTER.z, largePeak.x - CENTER.x);
+  const sePeak = PEAKS[0];    // 72m South East mountain
+  const sePeakAng = Math.atan2(sePeak.z - CENTER.z, sePeak.x - CENTER.x);
 
   for (let a = 0; a < TAU; a += 0.045) {
     let r = ISLAND_R * 0.78;
@@ -579,10 +581,15 @@ export function planCity(seed = CITY_SEED) {
       // Baseline outer ring road at previous/original position
       const baseTarget = c.beachStart - COAST_ROAD_INSET;
 
-      // C-shaped outward bypass on the large mountain side:
-      // Converged at the mountain flanks and diverged outward across the beach
-      const angDiff = Math.abs(Math.atan2(Math.sin(a - peakAng), Math.cos(a - peakAng)));
-      const bulge = angDiff < 0.65 ? Math.cos((angDiff / 0.65) * (Math.PI / 2)) ** 2 : 0;
+      // C-shaped outward bypass on the large mountain side (North West):
+      const angDiffBig = Math.abs(Math.atan2(Math.sin(a - peakAng), Math.cos(a - peakAng)));
+      const bulgeBig = angDiffBig < 0.65 ? Math.cos((angDiffBig / 0.65) * (Math.PI / 2)) ** 2 : 0;
+
+      // C-shaped outward bypass on the South East mountain side:
+      const angDiffSE = Math.abs(Math.atan2(Math.sin(a - sePeakAng), Math.cos(a - sePeakAng)));
+      const bulgeSE = angDiffSE < 0.65 ? Math.cos((angDiffSE / 0.65) * (Math.PI / 2)) ** 2 : 0;
+
+      const bulge = Math.max(bulgeBig, bulgeSE);
       const mountainBypassTarget = c.edge - 85;
       const target = lerp(baseTarget, mountainBypassTarget, bulge);
 

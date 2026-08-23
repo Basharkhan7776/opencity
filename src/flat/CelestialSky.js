@@ -1,17 +1,96 @@
 /* 2D Celestial Sky System:
- * - Clean radiant 2D Sun with soft corona (zero spiky tentacles)
- * - Detailed 2D Moon with lunar craters and silver-blue halo
+ * - Clean radiant 2D Sun with soft corona (visible across 24h orbit, descending to horizon at sunset)
+ * - Detailed 2D Moon with lunar craters and silver-blue halo (shining at night)
  * - 2D twinkling night starfield
- * - Full depth-testing enabled: buildings, terrain, and obstacles properly occlude the sun, moon, and stars
- * - Dynamically scaled to celestial background plane so it is 100% visible across all rendering distances
+ * - Plump circular & oval 2D cartoon cloud puffs spread across 360° sky (drifting North to South with depth effect)
+ * - Face-on celestial dome orientation (always appears circular/oval, never thin lines)
+ * - Full hardware depth-testing: buildings, mountains, and terrain properly occlude sky elements
  */
 import * as THREE from 'three';
 import { CENTER } from './Island.js';
 
 const STAR_COUNT = 1200;
+const CLOUD_PATCH_COUNT = 16;
 
 /**
- * Procedurally generates clean, radiant 2D Sun image texture (smooth glowing disc, no tentacles).
+ * Procedurally generates plump circular and oval cartoon cloud textures (512x512)
+ * with soft rounded lobes, gentle internal shading, and feathered edges.
+ */
+function createCircularOvalCloudTexture(type = 0) {
+  if (typeof document === 'undefined') return new THREE.Texture();
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 512, 512);
+
+  let lobes = [];
+
+  if (type === 0) {
+    // Plump, round cumulus cloud (circular cluster)
+    lobes = [
+      { x: 256, y: 260, rx: 110, ry: 95, opacity: 0.70 },
+      { x: 195, y: 285, rx: 78,  ry: 68, opacity: 0.60 },
+      { x: 318, y: 280, rx: 82,  ry: 70, opacity: 0.62 },
+      { x: 215, y: 215, rx: 80,  ry: 72, opacity: 0.65 },
+      { x: 298, y: 210, rx: 86,  ry: 76, opacity: 0.68 },
+      { x: 256, y: 175, rx: 75,  ry: 65, opacity: 0.60 },
+    ];
+  } else if (type === 1) {
+    // Plump horizontal oval cloud
+    lobes = [
+      { x: 256, y: 265, rx: 135, ry: 90, opacity: 0.70 },
+      { x: 170, y: 280, rx: 75,  ry: 62, opacity: 0.58 },
+      { x: 342, y: 275, rx: 78,  ry: 65, opacity: 0.60 },
+      { x: 210, y: 215, rx: 82,  ry: 70, opacity: 0.65 },
+      { x: 305, y: 210, rx: 88,  ry: 74, opacity: 0.66 },
+      { x: 256, y: 185, rx: 72,  ry: 60, opacity: 0.58 },
+    ];
+  } else if (type === 2) {
+    // Rounded double-puff circular cloud
+    lobes = [
+      { x: 220, y: 260, rx: 95, ry: 85, opacity: 0.68 },
+      { x: 295, y: 250, rx: 90, ry: 80, opacity: 0.66 },
+      { x: 175, y: 290, rx: 65, ry: 58, opacity: 0.55 },
+      { x: 340, y: 280, rx: 68, ry: 60, opacity: 0.56 },
+      { x: 245, y: 195, rx: 80, ry: 70, opacity: 0.65 },
+    ];
+  } else {
+    // Compact rounded oval cloudlet
+    lobes = [
+      { x: 256, y: 260, rx: 115, ry: 85, opacity: 0.68 },
+      { x: 190, y: 275, rx: 70,  ry: 60, opacity: 0.58 },
+      { x: 322, y: 270, rx: 72,  ry: 62, opacity: 0.60 },
+      { x: 256, y: 205, rx: 85,  ry: 72, opacity: 0.65 },
+    ];
+  }
+
+  // Draw soft feathered radial lobes
+  for (const p of lobes) {
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.scale(1.0, p.ry / p.rx);
+
+    const grad = ctx.createRadialGradient(0, 0, p.rx * 0.15, 0, 0, p.rx);
+    grad.addColorStop(0.0, `rgba(255, 255, 255, ${p.opacity})`);
+    grad.addColorStop(0.45, `rgba(248, 252, 255, ${p.opacity * 0.72})`);
+    grad.addColorStop(0.78, `rgba(235, 245, 255, ${p.opacity * 0.22})`);
+    grad.addColorStop(1.0, 'rgba(220, 235, 255, 0.0)');
+
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, p.rx, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * Procedurally generates clean, radiant 2D Sun image texture (smooth glowing disc, zero tentacles).
  */
 function createSunTexture() {
   if (typeof document === 'undefined') return new THREE.Texture();
@@ -99,7 +178,7 @@ export class CelestialSky {
     this._clock = 0;
     this.skyRadius = 300;
 
-    // 1. Clean Radiant 2D Sun (depth-tested, blocked by buildings)
+    // 1. Clean Radiant 2D Sun (depth-tested, occluded by buildings)
     this._buildSun();
 
     // 2. 2D Moon (depth-tested)
@@ -107,6 +186,9 @@ export class CelestialSky {
 
     // 3. 2D Twinkling Starfield
     this._buildStarfield();
+
+    // 4. Plump Circular & Oval Cloud Puffs (spread across 360° sky)
+    this._buildCircularCloudPatches();
 
     this.scene.add(this.root);
   }
@@ -121,10 +203,11 @@ export class CelestialSky {
       depthWrite: false,
       depthTest: true,
       fog: false,
+      side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
     });
     this.sunQuad = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), this.sunMat);
-    this.sunQuad.renderOrder = -7;
+    this.sunQuad.renderOrder = -8;
     this.root.add(this.sunQuad);
   }
 
@@ -138,10 +221,11 @@ export class CelestialSky {
       depthWrite: false,
       depthTest: true,
       fog: false,
+      side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
     });
     this.moonQuad = new THREE.Mesh(new THREE.PlaneGeometry(130, 130), this.moonMat);
-    this.moonQuad.renderOrder = -7;
+    this.moonQuad.renderOrder = -8;
     this.root.add(this.moonQuad);
   }
 
@@ -246,6 +330,65 @@ export class CelestialSky {
     this.root.add(this.starPoints);
   }
 
+  /* ---- 4. Plump Circular & Oval Cloud Puffs ---------------------------- */
+
+  _buildCircularCloudPatches() {
+    this.cloudPatches = [];
+
+    const textures = [
+      createCircularOvalCloudTexture(0),
+      createCircularOvalCloudTexture(1),
+      createCircularOvalCloudTexture(2),
+      createCircularOvalCloudTexture(3),
+    ];
+
+    this.patchMats = textures.map(tex => new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      fog: false,
+      side: THREE.DoubleSide,
+      opacity: 0.88,
+    }));
+
+    const patchGeom = new THREE.PlaneGeometry(1, 1);
+
+    for (let i = 0; i < CLOUD_PATCH_COUNT; i++) {
+      const texIdx = i % textures.length;
+      const mat = this.patchMats[texIdx];
+      const mesh = new THREE.Mesh(patchGeom, mat);
+      mesh.renderOrder = -6;
+
+      // Distribute evenly in a 360° circle around the entire sky (North, South, East, West)
+      const angle = (i / CLOUD_PATCH_COUNT) * Math.PI * 2 + (Math.random() - 0.5) * 0.25;
+      const distRatio = 0.48 + (i % 4) * 0.14 + Math.random() * 0.08;
+
+      const relX = Math.cos(angle) * distRatio;
+      const relZ = Math.sin(angle) * distRatio;
+      const relY = 0.18 + (i % 5) * 0.07 + Math.random() * 0.05; // 12° to 32° natural elevation
+
+      // Plump circular and oval proportions (aspect ratio 1.15 to 1.30, never thin lines)
+      const baseWidth = 180 + Math.random() * 110;
+      const baseHeight = baseWidth * (0.80 + Math.random() * 0.12);
+
+      // North to South drift speed (12 to 20 m/s)
+      const speed = 12.0 + (i % 4) * 3.0 + Math.random() * 2.5;
+
+      this.cloudPatches.push({
+        mesh,
+        relX,
+        relY,
+        relZ,
+        baseWidth,
+        baseHeight,
+        speed,
+      });
+
+      this.root.add(mesh);
+    }
+  }
+
   /* ---- Frame Update Loop ---------------------------------------------- */
 
   update(dt, timeOfDay, targetPos, atmo, camera) {
@@ -259,8 +402,8 @@ export class CelestialSky {
 
     this.root.position.set(px, py, pz);
 
-    // Place celestial sphere at 92% of camera far plane so it is behind all scene buildings,
-    // allowing buildings and mountains to cleanly occlude the sun and moon via hardware depth test
+    // Place celestial sphere at 92% of camera far plane so it is behind scene buildings,
+    // allowing buildings and mountains to cleanly occlude the sun, moon, and cloud patches via depth test
     const r = camera ? Math.max(180, camera.far * 0.92) : 500;
     this.skyRadius = r;
 
@@ -268,31 +411,29 @@ export class CelestialSky {
     this.sunQuad.scale.set(scale, scale, 1);
     this.moonQuad.scale.set(scale, scale, 1);
 
-    // 1. Update 2D Sun Position & Color
+    // 1. Update 2D Sun Position & Color (Tilted visible solar arc)
     const theta = atmo.t * Math.PI * 2;
     const sinElev = Math.sin(theta);
     const cosAzim = Math.cos(theta);
 
-    const sunX = cosAzim * r;
-    const sunY = sinElev * (r * 0.85);
-    const sunZ = cosAzim * 35;
+    const sunX = cosAzim * (r * 0.78);
+    const sunY = sinElev * (r * 0.62);
+    const sunZ = -cosAzim * (r * 0.52) - (r * 0.35);
 
     this.sunQuad.position.set(sunX, sunY, sunZ);
     this.sunQuad.visible = sunY > -30;
 
-    // 2. Update 2D Moon Position
-    const moonX = -cosAzim * (r * 0.95);
-    const moonY = -sinElev * (r * 0.82);
-    const moonZ = -cosAzim * 30;
+    // 2. Update 2D Moon Position (Tilted visible lunar arc)
+    const moonX = -cosAzim * (r * 0.78);
+    const moonY = -sinElev * (r * 0.62);
+    const moonZ = cosAzim * (r * 0.52) + (r * 0.35);
 
     this.moonQuad.position.set(moonX, moonY, moonZ);
     this.moonQuad.visible = moonY > -30;
 
-    // Billboards face camera
-    if (camera) {
-      this.sunQuad.quaternion.copy(camera.quaternion);
-      this.moonQuad.quaternion.copy(camera.quaternion);
-    }
+    // Face inward from sky dome towards viewer
+    this.sunQuad.lookAt(0, 0, 0);
+    this.moonQuad.lookAt(0, 0, 0);
 
     // Sun color modulation (Golden -> Crimson Sunset -> Dawn)
     this.sunMat.color.copy(atmo.cSun);
@@ -311,6 +452,57 @@ export class CelestialSky {
         this.starPositions[i * 3 + 2] = this.starDirections[i * 3 + 2] * starR;
       }
       this.starGeom.attributes.position.needsUpdate = true;
+    }
+
+    // 4. Update Plump Circular & Oval Cloud Puffs (North to South drift & Lighting)
+    const t = atmo.t;
+    let cloudColor = new THREE.Color(0xffffff);
+
+    if (atmo.nightFactor > 0.5) {
+      // Moonlit midnight indigo fog
+      cloudColor.setHex(0x384a68).lerp(new THREE.Color(0x202e42), 0.35);
+    } else if (t >= 0.44 && t <= 0.60) {
+      // Sunset warm peach, fiery coral, and violet haze
+      const sunsetAlpha = (t - 0.44) / 0.16;
+      cloudColor.setHex(0xffc292).lerp(new THREE.Color(0xd67066), sunsetAlpha);
+    } else if (t >= 0.00 && t <= 0.14) {
+      // Dawn peach mist
+      const dawnAlpha = t / 0.14;
+      cloudColor.setHex(0xd6947e).lerp(new THREE.Color(0xffeed4), dawnAlpha);
+    } else {
+      // Daytime bright atmospheric ivory-white
+      cloudColor.setHex(0xfffef6);
+    }
+
+    for (const mat of this.patchMats) {
+      mat.color.copy(cloudColor);
+      mat.opacity = atmo.isNight ? 0.65 : 0.88;
+    }
+
+    const bound = 1.15;
+
+    for (const p of this.cloudPatches) {
+      // Continuous North-to-South drift along Z axis across the whole sky
+      p.relZ += (p.speed * dt) / r;
+
+      // Toroidal continuous wrap: when passing southern horizon (+1.15), wrap to northern horizon (-1.15)
+      if (p.relZ > bound) {
+        p.relZ -= (bound * 2.0);
+      }
+
+      const posX = p.relX * r;
+      const posY = p.relY * r;
+      const posZ = p.relZ * r;
+
+      p.mesh.position.set(posX, posY, posZ);
+
+      // Scale dynamically with sky radius (plump circular/oval proportions)
+      const patchW = (p.baseWidth * scale);
+      const patchH = (p.baseHeight * scale);
+      p.mesh.scale.set(patchW, patchH, 1);
+
+      // Face viewer directly from sky dome so it ALWAYS appears as a full circular/oval cloud
+      p.mesh.lookAt(0, 0, 0);
     }
   }
 

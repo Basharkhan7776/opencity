@@ -265,12 +265,6 @@ export async function buildCityMeshes(placements, onProgress) {
   /** Dynamic night-time illumination update */
   root.updateCityLighting = (nightFactor) => {
     const f = Math.max(0, Math.min(1, nightFactor));
-    for (const lm of lightMats) {
-      if (lm.emissive) {
-        lm.emissive.setHex(0xffffff);
-        lm.emissiveIntensity = f * 1.3;
-      }
-    }
     if (lightPoolMat && lightPoolMesh) {
       lightPoolMat.opacity = f * 0.38;
       lightPoolMesh.visible = f > 0.02;

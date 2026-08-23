@@ -9,10 +9,6 @@ Add Lights to vehicles, spread light infront of it, increase visibility in spots
 Add waves in oceans and beaches, reaching the end of beaches waves.
 
 
-pedestrians seem like translucent, increase its opacity.
-
-Add clouds sfx in the sky and also sun and moon with stars at night.
-
 
 Add blur on outer side of the screen and white splashes after exceeding the speed by 80 km/h.
 

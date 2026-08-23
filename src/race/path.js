@@ -104,13 +104,12 @@ function dijkstraSmooth(adj, byId, from, to, initialDir = null, useCoast = false
 }
 
 /**
- * Generate a Large Flowing Circle Circuit around the city.
+ * Generate a Flowing Urban Circuit strictly within the city boundaries (never outer ring road).
  */
-function generateLargeCircleRoute(adj, byId, targetLength, r, useCoast) {
-  const maxR = useCoast ? ISLAND_R * 0.80 : RESIDENTIAL_R + 65;
-  const minR = useCoast ? RESIDENTIAL_R * 0.92 : 70;
+function generateLargeCircleRoute(adj, byId, targetLength, r) {
+  const maxR = RESIDENTIAL_R - 10;
+  const minR = 60;
   let idealR = clamp(targetLength / (Math.PI * 2), minR, maxR);
-  if (useCoast) idealR = Math.max(idealR, RESIDENTIAL_R + 90);
   const dir = r() > 0.5 ? 1 : -1; // Clockwise or counter-clockwise
   const startAng = r() * Math.PI * 2;
   const numWaypoints = targetLength > 1200 ? 8 : 4;
@@ -123,12 +122,10 @@ function generateLargeCircleRoute(adj, byId, targetLength, r, useCoast) {
 
     let bestNode = null, bestDist = Infinity;
     for (const n of byId.values()) {
+      const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
+      if (rr > RESIDENTIAL_R + 10) continue; // Strictly exclude outer ring road
       if ((adj.get(n.id) || []).length < 2) continue;
-      let d = Math.hypot(n.x - targetX, n.z - targetZ);
-      if (useCoast) {
-        const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
-        if (rr < RESIDENTIAL_R + 24) d += 160;
-      }
+      const d = Math.hypot(n.x - targetX, n.z - targetZ);
       if (d < bestDist) {
         bestDist = d;
         bestNode = n.id;
@@ -144,7 +141,7 @@ function generateLargeCircleRoute(adj, byId, targetLength, r, useCoast) {
   for (let i = 0; i < waypoints.length; i++) {
     const from = waypoints[i];
     const to = waypoints[(i + 1) % waypoints.length];
-    const seg = dijkstraSmooth(adj, byId, from, to, null, useCoast);
+    const seg = dijkstraSmooth(adj, byId, from, to, null, false);
     if (!seg || seg.ids.length < 2) return null;
     if (i === 0) allIds.push(...seg.ids);
     else allIds.push(...seg.ids.slice(1));
@@ -159,10 +156,59 @@ function generateLargeCircleRoute(adj, byId, targetLength, r, useCoast) {
 }
 
 /**
+ * Generate a Scenic Sprint along the Outer Ring Road (around the mountains & shoreline).
+ */
+function generateOuterRingSprintRoute(adj, byId, targetLength, r) {
+  const ringNodes = [];
+  for (const n of byId.values()) {
+    const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
+    if (rr > RESIDENTIAL_R + 65) {
+      const ringNbrs = (adj.get(n.id) || []).filter(nb => nb.width < 10 && Math.hypot(byId.get(nb.to).x - CENTER.x, byId.get(nb.to).z - CENTER.z) > RESIDENTIAL_R + 50);
+      if (ringNbrs.length >= 2) ringNodes.push(n);
+    }
+  }
+  if (ringNodes.length < 4) return null;
+
+  const startNode = ringNodes[Math.floor(r() * ringNodes.length)];
+  const dirIdx = r() > 0.5 ? 0 : 1;
+
+  const getRingNbrs = (id, excludeId) => {
+    return (adj.get(id) || []).filter(nb => {
+      if (nb.to === excludeId) return false;
+      const n = byId.get(nb.to);
+      return nb.width < 10 && n && Math.hypot(n.x - CENTER.x, n.z - CENTER.z) > RESIDENTIAL_R + 50;
+    });
+  };
+
+  const startNbrs = getRingNbrs(startNode.id, null);
+  if (startNbrs.length < 2) return null;
+
+  const firstNext = startNbrs[dirIdx % startNbrs.length];
+  const ids = [startNode.id, firstNext.to];
+  let cur = firstNext.to;
+  let prev = startNode.id;
+  let curLen = firstNext.length;
+
+  const maxNodes = Math.max(ringNodes.length * 5, Math.ceil(targetLength / 18));
+
+  while (curLen < targetLength && ids.length < maxNodes) {
+    const nbrs = getRingNbrs(cur, prev);
+    if (!nbrs.length) break;
+    const nextLink = nbrs[0];
+    ids.push(nextLink.to);
+    curLen += nextLink.length;
+    prev = cur;
+    cur = nextLink.to;
+  }
+
+  return ids.length >= 2 ? { ids, length: curLen } : null;
+}
+
+/**
  * Generate a Straight Sprint Across The Map.
  */
-function generateStraightSprintRoute(adj, byId, targetLength, r, useCoast) {
-  const span = Math.min(targetLength * 0.6, useCoast ? ISLAND_R * 0.82 : RESIDENTIAL_R + 80);
+function generateStraightSprintRoute(adj, byId, targetLength, r) {
+  const span = Math.min(targetLength * 0.6, RESIDENTIAL_R + 80);
   const axes = [
     { startX: CENTER.x - span, startZ: CENTER.z, endX: CENTER.x + span, endZ: CENTER.z },
     { startX: CENTER.x + span, startZ: CENTER.z, endX: CENTER.x - span, endZ: CENTER.z },
@@ -174,15 +220,12 @@ function generateStraightSprintRoute(adj, byId, targetLength, r, useCoast) {
 
   let startId = null, startDist = Infinity;
   let endId = null, endDist = Infinity;
-  const coastMin = RESIDENTIAL_R + 40;
 
   for (const n of byId.values()) {
     if ((adj.get(n.id) || []).length < 1) continue;
-    const rr = Math.hypot(n.x - CENTER.x, n.z - CENTER.z);
-    const coastBias = useCoast && rr > coastMin ? 180 : 0;
-    const ds = Math.hypot(n.x - axis.startX, n.z - axis.startZ) - coastBias;
+    const ds = Math.hypot(n.x - axis.startX, n.z - axis.startZ);
     if (ds < startDist) { startDist = ds; startId = n.id; }
-    const de = Math.hypot(n.x - axis.endX, n.z - axis.endZ) - coastBias;
+    const de = Math.hypot(n.x - axis.endX, n.z - axis.endZ);
     if (de < endDist) { endDist = de; endId = n.id; }
   }
 
@@ -193,7 +236,7 @@ function generateStraightSprintRoute(adj, byId, targetLength, r, useCoast) {
   const fwdLen = Math.hypot(fwdDx, fwdDz) || 1;
   const initialDir = { x: fwdDx / fwdLen, z: fwdDz / fwdLen };
 
-  const path = dijkstraSmooth(adj, byId, startId, endId, initialDir, useCoast);
+  const path = dijkstraSmooth(adj, byId, startId, endId, initialDir, false);
   if (!path || path.ids.length < 2) return null;
 
   let trimmedIds = [path.ids[0]];
@@ -358,17 +401,24 @@ export function generateRoute(graph, opts) {
   const loop = !!opts.loop;
   const r = rng((opts.seed ?? (Math.random() * 0xffffffff)) >>> 0);
   const { byId, adj } = buildAdj(graph);
-  let useCoast = opts.coast != null ? !!opts.coast : r() < (loop ? 0.42 : 0.34);
 
-  let res = loop
-    ? generateLargeCircleRoute(adj, byId, target, r, useCoast)
-    : generateStraightSprintRoute(adj, byId, target, r, useCoast);
+  let res = null;
+  let isCoast = false;
 
-  if ((!res || !res.ids || res.ids.length < 2) && useCoast) {
-    useCoast = false;
-    res = loop
-      ? generateLargeCircleRoute(adj, byId, target, r, false)
-      : generateStraightSprintRoute(adj, byId, target, r, false);
+  if (loop) {
+    // 1. Lap races are ALWAYS urban circuits within the city (never outer ring road)
+    res = generateLargeCircleRoute(adj, byId, target, r);
+  } else {
+    // 2. Sprint races: alternate between Outer Ring Coast Sprint and Urban Straight Sprint (prefer coast for 5km/10km)
+    const wantCoast = opts.coast != null ? !!opts.coast : (target >= 4000 ? true : r() < 0.50);
+    if (wantCoast) {
+      res = generateOuterRingSprintRoute(adj, byId, target, r);
+      if (res && res.ids?.length >= 2) isCoast = true;
+    }
+    if (!res || !res.ids || res.ids.length < 2) {
+      res = generateStraightSprintRoute(adj, byId, target, r);
+      isCoast = false;
+    }
   }
 
   if (!res || !res.ids || res.ids.length < 2) return null;
@@ -384,7 +434,7 @@ export function generateRoute(graph, opts) {
     checkpoints,
     length: points[points.length - 1].s,
     loop,
-    coast: useCoast,
+    coast: isCoast,
     startYaw: Math.atan2(b.z - a.z, b.x - a.x),
   };
 }

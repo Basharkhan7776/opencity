@@ -6,8 +6,8 @@ import { projectOnRoute, pointAtS } from './path.js';
 import { RivalDriver } from './rival.js';
 import { RaceMarks } from './marks.js';
 
-export const RACE_LENGTHS = [400, 800, 1500, 2500];
-export const RACE_LENGTH_LABELS = ['400 M', '800 M', '1.5 KM', '2.5 KM'];
+export const RACE_LENGTHS = [400, 800, 1500, 2500, 5000, 10000];
+export const RACE_LENGTH_LABELS = ['400 M', '800 M', '1.5 KM', '2.5 KM', '5.0 KM', '10.0 KM'];
 export const RACE_DIFFS = ['easy', 'medium', 'hard'];
 export const RACE_DIFF_LABELS = ['EASY', 'MEDIUM', 'HARD'];
 export const RACE_MAX_LAPS = 8;
