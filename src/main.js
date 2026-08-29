@@ -15,6 +15,7 @@ import { CENTER, ISLAND_R } from './flat/Island.js';
 import { buildFlatWorld } from './flat/FlatWorld.js';
 import { Pedestrians, PED_RADIUS } from './flat/Pedestrians.js';
 import { Traffic, TRAFFIC_COUNT } from './flat/Traffic.js';
+import { VEHICLES } from './data/vehicles.js';
 import { loadCarGLB } from './car/mesh.js';
 import { Car, MAX_RPM, steerLockAt } from './car/physics.js';
 import { ChaseCamera } from './car/camera.js';
@@ -102,44 +103,46 @@ const FOG_NEAR = 300;           // fog starts this far from the camera
 const FOG_FAR = VIEW_RADIUS;    // fully fogged at the edge of the sphere
 const CAM_FAR = FOG_FAR + 100;  // camera far plane, just past the fog
 
-/* The player's garage. Each entry is a GLB from assets/vehicle/ which
-   buildCarFromGLTF scales onto the physics platform, keeping the model's own
-   baked track width so every vehicle runs a different tyre spacing. The pause
-   menu's CHANGE VEHICLE picks from these; #car=<name> picks the starting one.
+/* The player's garage. Vehicle models and characteristics are configured in src/data/vehicles.json. */
+const VEHICLE_KEY = 'opencity_vehicle';
 
-   perf drives the feel: power/drag = engine (acceleration, top speed),
-   grip = tyre friction, steer = wheel response rate, susp = spring stiffness
-   (<1 soft and bouncy — the trucks; >1 stiff and planted — the race cars),
-   drift = how far the handbrake drops the rear (<1 glued — heavy vehicles
-   refuse to slide; >1 tail-happy — the fast cars light right up). Power
-   can't spin a drifty car on its own: the throttle only sustains a slide
-   once the rear is well past its grip peak, so normal driving grips. */
-const VEHICLES = [
-  { name: 'Sports Sedan', url: '/assets/vehicle/sedan-sports.glb', wheel: '/assets/vehicle/wheel-racing.glb', perf: { power: 1.0, drag: 1.0, grip: 1.05, steer: 1.05, susp: 1.15, drift: 0.8 } },
-  { name: 'Sedan', url: '/assets/vehicle/sedan.glb', wheel: '/assets/vehicle/wheel-default.glb', perf: { power: 0.69, drag: 1.0, grip: 1.0, steer: 1.0, susp: 1.0, drift: 0.55 } },
-  { name: 'Hatchback', url: '/assets/vehicle/hatchback-sports.glb', wheel: '/assets/vehicle/wheel-default.glb', perf: { power: 0.59, drag: 1.0, grip: 0.98, steer: 1.0, susp: 0.9, drift: 0.6 } },
-  { name: 'SUV', url: '/assets/vehicle/suv.glb', wheel: '/assets/vehicle/wheel-dark.glb', perf: { power: 0.72, drag: 1.0, grip: 1.0, steer: 0.9, susp: 0.7, drift: 0.3 } },
-  { name: 'Luxury SUV', url: '/assets/vehicle/suv-luxury.glb', wheel: '/assets/vehicle/wheel-dark.glb', perf: { power: 0.88, drag: 1.05, grip: 1.0, steer: 0.9, susp: 0.7, drift: 0.3 } },
-  { name: 'Race', url: '/assets/vehicle/race.glb', wheel: '/assets/vehicle/wheel-racing.glb', perf: { power: 1.58, drag: 0.8, grip: 5.0, steer: 1.0, susp: 10.0, drift: 0.1 } },
-  { name: 'Future Race', url: '/assets/vehicle/race-future.glb', wheel: '/assets/vehicle/wheel-racing.glb', perf: { power: 1.72, drag: 0.9, grip: 1.35, steer: 1.35, susp: 2.1, drift: 0.35 } },
-  { name: 'Police', url: '/assets/vehicle/police.glb', wheel: '/assets/vehicle/wheel-dark.glb', perf: { power: 0.92, drag: 1.0, grip: 1.05, steer: 1.05, susp: 1.1, drift: 0.75 } },
-  { name: 'Taxi', url: '/assets/vehicle/taxi.glb', wheel: '/assets/vehicle/wheel-default.glb', perf: { power: 0.49, drag: 1.0, grip: 0.95, steer: 0.95, susp: 0.9, drift: 0.7 } },
-  { name: 'Van', url: '/assets/vehicle/van.glb', wheel: '/assets/vehicle/wheel-default.glb', perf: { power: 0.44, drag: 1.0, grip: 0.9, steer: 0.85, susp: 0.5, drift: 0.2 } },
-  { name: 'Delivery', url: '/assets/vehicle/delivery.glb', wheel: '/assets/vehicle/wheel-default.glb', perf: { power: 0.4, drag: 1.15, grip: 0.9, steer: 0.85, susp: 0.5, drift: 0.2 } },
-  { name: 'Delivery Flat', url: '/assets/vehicle/delivery-flat.glb', wheel: '/assets/vehicle/wheel-default.glb', perf: { power: 0.42, drag: 1.1, grip: 0.9, steer: 0.85, susp: 0.5, drift: 0.2 } },
-  { name: 'Truck', url: '/assets/vehicle/truck.glb', wheel: '/assets/vehicle/wheel-truck.glb', perf: { power: 0.55, drag: 1.35, grip: 0.85, steer: 0.8, susp: 0.45, drift: 0.12 } },
-  { name: 'Flatbed Truck', url: '/assets/vehicle/truck-flat.glb', wheel: '/assets/vehicle/wheel-truck.glb', perf: { power: 0.52, drag: 1.3, grip: 0.85, steer: 0.8, susp: 0.45, drift: 0.12 } },
-  { name: 'Garbage Truck', url: '/assets/vehicle/garbage-truck.glb', wheel: '/assets/vehicle/wheel-truck.glb', perf: { power: 0.38, drag: 1.45, grip: 0.8, steer: 0.75, susp: 0.4, drift: 0.08 } },
-  { name: 'Firetruck', url: '/assets/vehicle/firetruck.glb', wheel: '/assets/vehicle/wheel-truck.glb', perf: { power: 0.7, drag: 1.4, grip: 0.85, steer: 0.8, susp: 0.5, drift: 0.18 } },
-  { name: 'Ambulance', url: '/assets/vehicle/ambulance.glb', wheel: '/assets/vehicle/wheel-truck.glb', perf: { power: 0.75, drag: 1.2, grip: 0.9, steer: 0.85, susp: 0.55, drift: 0.25 } },
-  { name: 'Tractor', url: '/assets/vehicle/tractor.glb', wheel: { front: '/assets/vehicle/wheel-tractor-front.glb', back: '/assets/vehicle/wheel-tractor-back.glb' }, perf: { power: 0.35, drag: 1.25, grip: 0.8, steer: 0.7, susp: 0.4, drift: 0.05 } },
-  { name: 'Tractor Shovel', url: '/assets/vehicle/tractor-shovel.glb', wheel: { front: '/assets/vehicle/wheel-tractor-front.glb', back: '/assets/vehicle/wheel-tractor-back.glb' }, perf: { power: 0.32, drag: 1.3, grip: 0.75, steer: 0.65, susp: 0.35, drift: 0.04 } },
-  { name: 'Police Tractor', url: '/assets/vehicle/tractor-police.glb', wheel: { front: '/assets/vehicle/wheel-tractor-dark-front.glb', back: '/assets/vehicle/wheel-tractor-dark-back.glb' }, perf: { power: 0.36, drag: 1.25, grip: 0.8, steer: 0.7, susp: 0.4, drift: 0.05 } },
-];
+function loadSavedVehicleIndex() {
+  const want = q.get('car');
+  if (want) {
+    const byUrl = VEHICLES.findIndex(v => v.url.endsWith(`/${want}.glb`) || v.id === want || v.name.toLowerCase() === want.toLowerCase());
+    if (byUrl >= 0) return byUrl;
+  }
+  try {
+    const saved = localStorage.getItem(VEHICLE_KEY);
+    if (saved != null) {
+      const byId = VEHICLES.findIndex(v => v.id === saved);
+      if (byId >= 0) return byId;
+      const byName = VEHICLES.findIndex(v => v.name.toLowerCase() === saved.toLowerCase());
+      if (byName >= 0) return byName;
+      const num = parseInt(saved, 10);
+      if (!Number.isNaN(num) && num >= 0 && num < VEHICLES.length) return num;
+    }
+  } catch { /* private mode */ }
+  return 0;
+}
+
+function saveSelectedVehicle(specOrIdx) {
+  try {
+    if (typeof specOrIdx === 'number') {
+      const spec = VEHICLES[specOrIdx];
+      if (spec) localStorage.setItem(VEHICLE_KEY, spec.id || spec.name);
+    } else if (specOrIdx && typeof specOrIdx === 'object') {
+      localStorage.setItem(VEHICLE_KEY, specOrIdx.id || specOrIdx.name);
+    } else if (typeof specOrIdx === 'string') {
+      localStorage.setItem(VEHICLE_KEY, specOrIdx);
+    }
+  } catch { /* private mode */ }
+}
 
 class Game {
   constructor(canvas) {
     this.canvas = canvas;
+    this.vehicleIndex = loadSavedVehicleIndex();
     this.clock = new THREE.Clock();
     this.paused = false;
     this.running = false;
@@ -301,6 +304,9 @@ class Game {
 
     // Interactive pointer clicks on Minimap, Fullscreen Map Back button, and Race Setup reload
     const handleUIPointer = (e) => {
+      // Touch interactions are managed via Touch component to prevent double-toggling
+      if (e.pointerType === 'touch') return;
+
       const x = e.clientX, y = e.clientY;
       if (this.showMap) {
         // Tapping Back button or anywhere in map view closes map
@@ -383,7 +389,7 @@ class Game {
   }
 
   buildCars() {
-    this.player = new Car(this.track, { palette: 0, perf: VEHICLES[0].perf });
+    this.player = new Car(this.track, { palette: 0, perf: VEHICLES[this.vehicleIndex]?.perf || VEHICLES[0].perf });
     /* The run starts on a random city road, facing along the tarmac. */
     this._teleportToRandomRoad();
 
@@ -391,12 +397,10 @@ class Game {
     this.vehiclesLoading = new Map();
 
     const want = q.get('car');
-    let idx = 0;
     if (want) {
-      const byUrl = VEHICLES.findIndex(v => v.url.endsWith(`/${want}.glb`));
-      if (byUrl >= 0) idx = byUrl;
+      const byUrl = VEHICLES.findIndex(v => v.url.endsWith(`/${want}.glb`) || v.id === want || v.name.toLowerCase() === want.toLowerCase());
+      if (byUrl >= 0) this.vehicleIndex = byUrl;
     }
-    this.vehicleIndex = idx;
     this._loadVehicle(this.vehicleIndex);
   }
 
@@ -412,10 +416,10 @@ class Game {
   }
 
   async _setVehicle(idx) {
-    const v = VEHICLES[idx];
+    const v = VEHICLES[idx] || VEHICLES[0];
     if (this.vehicleViews.has(v.name)) return this.vehicleViews.get(v.name);
     if (this.vehiclesLoading.has(v.name)) return this.vehiclesLoading.get(v.name);
-    const p = loadCarGLB(v.url, v.wheel).then(view => {
+    const p = loadCarGLB(v).then(view => {
       this._styleView(view);
       this.vehicleViews.set(v.name, view);
       return view;
@@ -426,11 +430,12 @@ class Game {
 
   async _loadVehicle(idx) {
     this.vehicleIndex = idx;
-    const v = VEHICLES[idx];
+    const v = VEHICLES[idx] || VEHICLES[0];
     if (!v) return;
+    saveSelectedVehicle(v);
     const view = await this._setVehicle(idx);
     if (this.vehicleIndex !== idx) return;   // user moved on while loading
-    this.player.setPerf(v.perf);
+    this.player.setVehicleConfig(v);
     if (this.playerView && this.playerView.root.parent === this.scene) {
       this.scene.remove(this.playerView.root);
     }
@@ -1020,8 +1025,8 @@ class Game {
   }
 
   async _loadRivalView(idx) {
-    const v = VEHICLES[idx];
-    const view = await loadCarGLB(v.url, v.wheel);
+    const v = VEHICLES[idx] || VEHICLES[0];
+    const view = await loadCarGLB(v);
     this._styleView(view);
     return view;
   }
@@ -1041,6 +1046,7 @@ class Game {
     this._switching = true;
     this.vehicleIndex = idx;
     this.raceSetup.vehicle = idx;
+    saveSelectedVehicle(idx);
     try {
       await this._loadVehicle(idx);
       this._teleportToRandomRoad();
@@ -1541,7 +1547,7 @@ class Hud {
     if (!L) return;
 
     if (tc.inMap) {
-      if (L.mapBackBtn) this._drawTouchButton(ctx, L.mapBackBtn, L.mapBackBtn.label, false, 'gold');
+      if (L.mapBackBtn) this._drawTouchButton(ctx, L.mapBackBtn, L.mapBackBtn.label, tc.mapPressed, 'gold');
       return;
     }
 
@@ -1897,28 +1903,30 @@ class Hud {
     ctx.fillStyle = '#f0e6d8';
     ctx.fillText(isRace ? 'TACTICAL RACE MAP' : 'CITY MAP — OPEN ROAM', cardX + 22, cardY + 28);
 
-    // Back / Close Button in header
-    const backW = isMobile ? 88 : 105;
-    const backH = 32;
-    const backX = cardX + cardW - backW - 18;
-    const backY = cardY + 12;
+    // Back / Close Button in header (drawn on desktop; on mobile _drawTouch draws responsive touch button)
+    if (!isMobile) {
+      const backW = 105;
+      const backH = 32;
+      const backX = cardX + cardW - backW - 18;
+      const backY = cardY + 12;
 
-    ctx.save();
-    ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(backX, backY, backW, backH, 8);
-    else ctx.rect(backX, backY, backW, backH);
-    ctx.fillStyle = 'rgba(255, 184, 0, 0.22)';
-    ctx.fill();
-    ctx.strokeStyle = '#ffd54a';
-    ctx.lineWidth = 1.6;
-    ctx.stroke();
+      ctx.save();
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(backX, backY, backW, backH, 8);
+      else ctx.rect(backX, backY, backW, backH);
+      ctx.fillStyle = 'rgba(255, 184, 0, 0.22)';
+      ctx.fill();
+      ctx.strokeStyle = '#ffd54a';
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
 
-    ctx.font = '700 12px ui-sans-serif, system-ui, sans-serif';
-    ctx.fillStyle = '#ffd54a';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('◀ BACK', backX + backW / 2, backY + backH / 2);
-    ctx.restore();
+      ctx.font = '700 12px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = '#ffd54a';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('◀ BACK', backX + backW / 2, backY + backH / 2);
+      ctx.restore();
+    }
 
     // 3. Map Viewport Dimensions
     const mapPadTop = 48;

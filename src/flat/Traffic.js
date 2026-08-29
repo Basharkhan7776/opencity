@@ -38,6 +38,14 @@ export class Traffic {
     this.track = track;
     this.graph = graph || null;
     this.vehicles = vehicles || [];
+    this.trafficVehicles = (this.vehicles || []).filter(v => {
+      if (v.traffic === false || v.isRaceCar) return false;
+      const id = (v.id || '').toLowerCase();
+      const name = (v.name || '').toLowerCase();
+      if (id === 'race' || id === 'race_future' || name === 'race' || name === 'future race') return false;
+      return true;
+    });
+    if (!this.trafficVehicles.length) this.trafficVehicles = this.vehicles.slice();
     this.loadView = loadView;
     this.ready = false;
     this.disposed = false;
@@ -56,11 +64,12 @@ export class Traffic {
   }
 
   async _addCar(i) {
-    if (!this.vehicles.length) return null;
-    const vIdx = (i * 2 + 1) % this.vehicles.length;
-    const spec = this.vehicles[vIdx];
+    const list = this.trafficVehicles.length ? this.trafficVehicles : this.vehicles;
+    if (!list.length) return null;
+    const spec = list[i % list.length];
+    const vIdx = this.vehicles.indexOf(spec);
     try {
-      const view = await this.loadView(vIdx);
+      const view = await this.loadView(vIdx >= 0 ? vIdx : spec);
       this.root.add(view.root);
       view.root.visible = false;
 
@@ -69,12 +78,13 @@ export class Traffic {
         ai: true,
         perf: spec.perf,
       });
+      car.setVehicleConfig(spec);
 
       const item = {
         car,
         view,
         spec,
-        vIdx,
+        vIdx: vIdx >= 0 ? vIdx : i,
         active: false,
         edge: null,
         dir: 1,
@@ -90,6 +100,7 @@ export class Traffic {
         nextBranch: null,
         isWaitingObstacle: false,
         obstacleTimer: 0,
+        obstacleType: null,
         _lastPos: new THREE.Vector2(),
       };
       this.cars.push(item);
@@ -205,7 +216,8 @@ export class Traffic {
       return;
     }
 
-    const initialCount = Math.max(12, Math.min(50, this.limit));
+    const list = this.trafficVehicles?.length ? this.trafficVehicles : this.vehicles;
+    const initialCount = Math.max(list.length, Math.min(50, this.limit));
     const loadPromises = [];
     for (let i = 0; i < initialCount; i++) {
       loadPromises.push(this._addCar(i));
@@ -233,12 +245,12 @@ export class Traffic {
       const sx = px + Math.cos(ang) * d;
       const sz = pz + Math.sin(ang) * d;
 
-      // Reject candidates in front of the player (< 180m and dot > 0.20)
+      // Reject candidates directly right on top of player or right in front within tight cone
       const toSx = sx - px, toSz = sz - pz;
       const dist = Math.hypot(toSx, toSz);
-      if (dist < 1e-3) continue;
+      if (dist < 30) continue;
       const dotFwd = (toSx / dist) * pFwdX + (toSz / dist) * pFwdZ;
-      if (dotFwd > 0.20 && dist < 180) {
+      if (dotFwd > 0.70 && dist < 65) {
         continue;
       }
 
@@ -264,12 +276,11 @@ export class Traffic {
       const posX = ex + normX * item.laneOffset;
       const posZ = ez + normZ * item.laneOffset;
 
-      // Verify the placed position is also not directly in front of the player
       const finalDx = posX - px, finalDz = posZ - pz;
       const finalDist = Math.hypot(finalDx, finalDz);
       if (finalDist > 0) {
         const finalDot = (finalDx / finalDist) * pFwdX + (finalDz / finalDist) * pFwdZ;
-        if (finalDot > 0.20 && finalDist < 180) {
+        if (finalDot > 0.70 && finalDist < 65) {
           continue;
         }
       }
@@ -294,6 +305,7 @@ export class Traffic {
       item.nextBranch = null;
       item.isWaitingObstacle = false;
       item.obstacleTimer = 0;
+      item.obstacleType = null;
       item._lastPos.set(posX, posZ);
 
       item.active = true;
@@ -306,14 +318,15 @@ export class Traffic {
 
   /**
    * Detect obstacles (player, other vehicles, pedestrians) directly in front of this vehicle.
+   * Returns: 'vehicle' | 'ped' | null
    */
   _checkObstacleAhead(item, allCars, player, peds) {
     const car = item.car;
     const cx = car.pos.x, cz = car.pos.z;
     const fx = Math.cos(car.yaw), fz = Math.sin(car.yaw);
     const rx = -fz, rz = fx;
-    const DETECT_DIST = 11.0;
-    const DETECT_WIDTH = 2.0;
+    const DETECT_DIST = 11.5;
+    const DETECT_WIDTH = 2.4;
 
     // 1. Player vehicle check
     if (player && player.pos) {
@@ -321,7 +334,7 @@ export class Traffic {
       const fwd = dx * fx + dz * fz;
       const lat = Math.abs(dx * rx + dz * rz);
       if (fwd > 0.8 && fwd < DETECT_DIST && lat < DETECT_WIDTH) {
-        return true;
+        return 'vehicle';
       }
     }
 
@@ -333,7 +346,7 @@ export class Traffic {
         const fwd = dx * fx + dz * fz;
         const lat = Math.abs(dx * rx + dz * rz);
         if (fwd > 1.2 && fwd < DETECT_DIST && lat < DETECT_WIDTH) {
-          return true;
+          return 'vehicle';
         }
       }
     }
@@ -346,12 +359,12 @@ export class Traffic {
         const fwd = dx * fx + dz * fz;
         const lat = Math.abs(dx * rx + dz * rz);
         if (fwd > 0.6 && fwd < 8.5 && lat < 2.2) {
-          return true;
+          return 'ped';
         }
       }
     }
 
-    return false;
+    return null;
   }
 
   _stepCar(item, dt, player, peds) {
@@ -383,92 +396,8 @@ export class Traffic {
     const branches = this._nodeOut.get(endNodeId) || [];
 
     // -------------------------------------------------------------
-    // 1. Off-Road Check & Automatic Road Return Enforcement
+    // 1. Stable Next Branch & Edge Transition
     // -------------------------------------------------------------
-    const clX = startX + tx * along;
-    const clZ = startZ + tz * along;
-    const latOff = (car.pos.x - clX) * normX + (car.pos.z - clZ) * normZ;
-    const maxAllowedLat = edge.width * 0.48;
-
-    if (Math.abs(latOff) > maxAllowedLat || along < -3.0 || along > edge.len + 3.0) {
-      // Vehicle strayed off tarmac: instantly bring it back into its road lane
-      const safeAlong = clamp(along, 2.0, Math.max(2.0, edge.len - 2.0));
-      const targetReturnX = startX + tx * safeAlong + normX * item.laneOffset;
-      const targetReturnZ = startZ + tz * safeAlong + normZ * item.laneOffset;
-
-      car.placeAt(targetReturnX, targetReturnZ);
-      car.yaw = Math.atan2(tz, tx);
-      car.vx = Math.max(car.vx, 6.0);
-      car.vy = 0;
-      car.r = 0;
-      car.vertVel = 0;
-      car.height = 0;
-      item.stuckTimer = 0;
-    }
-
-    // -------------------------------------------------------------
-    // 2. Zebra Crossing Stop & Wait Logic (Stop Before Zebra Stripes)
-    // -------------------------------------------------------------
-    // Junction radius opens the road slab; zebra crossing sits right at the mouth of the junction
-    const junctionRadius = Math.min(edge.width * 0.7, edge.len * 0.45);
-    // Stop line is positioned just before the painted zebra crossing stripes (approx 3.5m - 4.5m before junction mouth)
-    const zebraStopDist = junctionRadius + 3.8;
-
-    if (branches.length >= 2 && distToEnd <= zebraStopDist + 2.8 && distToEnd >= zebraStopDist - 2.2) {
-      if (item.lastJunctionId !== endNodeId && !item.hasWaitedAtNode) {
-        item.hasWaitedAtNode = true;
-        item.lastJunctionId = endNodeId;
-        const waitSec = Math.random() * 10.0; // Random wait from 0 to 10 seconds!
-        if (waitSec > 0.4) {
-          item.isWaitingJunction = true;
-          item.junctionTimer = waitSec;
-        }
-      }
-    }
-
-    if (item.isWaitingJunction) {
-      item.junctionTimer -= dt;
-      if (item.junctionTimer <= 0) {
-        item.isWaitingJunction = false;
-        // Launch forward smoothly across the zebra crossing and into the intersection
-        item.throttleSmooth = 0.8;
-        car.vx = Math.max(car.vx, 4.5);
-      }
-    }
-
-    // Clear lastJunctionId once vehicle has advanced into the new road
-    if (along > 12.0 && item.lastJunctionId !== null && item.lastJunctionId !== endNodeId) {
-      item.lastJunctionId = null;
-    }
-
-    // -------------------------------------------------------------
-    // 3. Forward Obstacle Detection & Wait Logic (0 to 10 Seconds)
-    // -------------------------------------------------------------
-    const obstacleAhead = this._checkObstacleAhead(item, this.cars, player, peds);
-    if (obstacleAhead) {
-      if (!item.isWaitingObstacle) {
-        item.isWaitingObstacle = true;
-        item.obstacleTimer = 1.0 + Math.random() * 9.0; // Wait up to 10 seconds
-      }
-    }
-
-    if (item.isWaitingObstacle) {
-      item.obstacleTimer -= dt;
-      if (item.obstacleTimer <= 0) {
-        if (!obstacleAhead) {
-          item.isWaitingObstacle = false;
-          item.throttleSmooth = 0.8;
-          car.vx = Math.max(car.vx, 4.0);
-        } else {
-          item.obstacleTimer = 0.5; // Continue holding until obstacle moves away
-        }
-      }
-    }
-
-    // -------------------------------------------------------------
-    // 4. Stable Next Branch & Waypoint Lookahead
-    // -------------------------------------------------------------
-    // Select and lock the next outgoing branch consistently when approaching the node
     if (!item.nextBranch || item.nextBranch.fromNodeId !== endNodeId) {
       const validBranches = branches.filter(b => b.edge.id !== edge.id);
       const picked = validBranches.length > 0
@@ -487,7 +416,7 @@ export class Traffic {
     }
 
     // Perform transition when vehicle crosses onto the next edge
-    if (distToEnd <= 1.0 || along >= edge.len - 0.4) {
+    if (distToEnd <= 2.0 || along >= edge.len - 1.0) {
       if (item.nextBranch && item.nextBranch.edge) {
         item.edge = item.nextBranch.edge;
         item.dir = item.nextBranch.dir;
@@ -503,17 +432,106 @@ export class Traffic {
       }
     }
 
-    // Calculate waypoint ahead
+    // -------------------------------------------------------------
+    // 2. Off-Road Check & Automatic Road Return Enforcement
+    // -------------------------------------------------------------
+    const clX = startX + tx * along;
+    const clZ = startZ + tz * along;
+    const latOff = (car.pos.x - clX) * normX + (car.pos.z - clZ) * normZ;
+    const maxAllowedLat = edge.width * 0.55;
+
+    const inJunctionZone = distToEnd < 6.0 || along < 3.0;
+    const isOffRoad = inJunctionZone
+      ? Math.abs(latOff) > edge.width * 0.95 || along < -8.0 || along > edge.len + 8.0
+      : Math.abs(latOff) > maxAllowedLat || along < -4.0 || along > edge.len + 4.0;
+
+    if (isOffRoad) {
+      // Vehicle strayed off tarmac: cleanly place back in its road lane
+      const safeAlong = clamp(along, 2.0, Math.max(2.0, edge.len - 2.0));
+      const targetReturnX = startX + tx * safeAlong + normX * item.laneOffset;
+      const targetReturnZ = startZ + tz * safeAlong + normZ * item.laneOffset;
+      const yaw = Math.atan2(tz, tx);
+
+      car.placeAtWorld(targetReturnX, targetReturnZ, yaw);
+      car.vx = Math.max(car.vx, 6.0);
+      car.vy = 0;
+      car.r = 0;
+      car.vertVel = 0;
+      car.height = 0;
+      car.strandedFor = 0;
+      item.stuckTimer = 0;
+    }
+
+    // -------------------------------------------------------------
+    // 3. Zebra Crossing Stop & Wait Logic (Stop Before Zebra Stripes)
+    // -------------------------------------------------------------
+    const junctionRadius = Math.min(edge.width * 0.7, edge.len * 0.45);
+    const zebraStopDist = junctionRadius + 3.8;
+
+    if (branches.length >= 2 && distToEnd <= zebraStopDist + 2.8 && distToEnd >= zebraStopDist - 2.2) {
+      if (item.lastJunctionId !== endNodeId && !item.hasWaitedAtNode) {
+        item.hasWaitedAtNode = true;
+        item.lastJunctionId = endNodeId;
+        const waitSec = Math.random() * 5.0; // Random wait from 0 to 5 seconds
+        if (waitSec > 0.4) {
+          item.isWaitingJunction = true;
+          item.junctionTimer = waitSec;
+        }
+      }
+    }
+
+    if (item.isWaitingJunction) {
+      item.junctionTimer -= dt;
+      if (item.junctionTimer <= 0) {
+        item.isWaitingJunction = false;
+        item.throttleSmooth = 0.8;
+        car.vx = Math.max(car.vx, 4.5);
+      }
+    }
+
+    // Clear lastJunctionId once vehicle has advanced into the new road
+    if (along > 12.0 && item.lastJunctionId !== null && item.lastJunctionId !== endNodeId) {
+      item.lastJunctionId = null;
+    }
+
+    // -------------------------------------------------------------
+    // 4. Forward Obstacle Detection & Wait Logic (5 Seconds for Vehicles)
+    // -------------------------------------------------------------
+    const obstacleType = this._checkObstacleAhead(item, this.cars, player, peds);
+    if (obstacleType) {
+      if (!item.isWaitingObstacle) {
+        item.isWaitingObstacle = true;
+        item.obstacleType = obstacleType;
+        // Stop for 5 seconds when vehicle mesh comes in front; 2.5s for pedestrians
+        item.obstacleTimer = obstacleType === 'vehicle' ? 5.0 : 2.5;
+      }
+    }
+
+    if (item.isWaitingObstacle) {
+      item.obstacleTimer -= dt;
+      if (item.obstacleTimer <= 0) {
+        if (!obstacleType) {
+          item.isWaitingObstacle = false;
+          item.obstacleType = null;
+          item.throttleSmooth = 0.8;
+          car.vx = Math.max(car.vx, 4.0);
+        } else {
+          item.obstacleTimer = obstacleType === 'vehicle' ? 1.0 : 0.5; // Continue holding until obstacle moves away
+        }
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 5. Waypoint Lookahead & Steering
+    // -------------------------------------------------------------
     const lookDist = Math.max(12, car.speed * 0.9);
     let targetX, targetZ;
 
     if (distToEnd > lookDist) {
-      // Waypoint is on current edge
       const wpAlong = along + lookDist;
       targetX = startX + tx * wpAlong + normX * item.laneOffset;
       targetZ = startZ + tz * wpAlong + normZ * item.laneOffset;
     } else if (item.nextBranch && item.nextBranch.edge) {
-      // Waypoint smoothly continues into the next road branch
       const nb = item.nextBranch;
       const ntx = nb.edge.tx * nb.dir;
       const ntz = nb.edge.tz * nb.dir;
@@ -550,6 +568,8 @@ export class Traffic {
       car.vx = approach(car.vx, 0, 24.0, dt);
       car.vy = 0;
       item.throttleSmooth = 0;
+      car.strandedFor = 0;
+      item.stuckTimer = 0;
     } else {
       if (car.speed < targetSpeed - 1.0) {
         throttle = clamp((targetSpeed - car.speed) / 5.5 + 0.4, 0.25, 1.0);
@@ -564,18 +584,24 @@ export class Traffic {
     // Stuck detector (only when not intentionally waiting)
     if (!mustStop) {
       const moved = Math.hypot(car.pos.x - item._lastPos.x, car.pos.z - item._lastPos.y);
-      if (moved < 0.15 && car.speed < 0.8) {
+      if (moved < 0.15 && car.speed < 0.5) {
         item.stuckTimer += dt;
-        if (item.stuckTimer > 4.0 || car.strandedFor > 4.5) {
-          item.active = false;
-          if (item.view?.root) item.view.root.visible = false;
-          return;
+        if (item.stuckTimer > 5.0) {
+          const safeAlong = clamp(along, 2.0, Math.max(2.0, edge.len - 2.0));
+          const targetReturnX = startX + tx * safeAlong + normX * item.laneOffset;
+          const targetReturnZ = startZ + tz * safeAlong + normZ * item.laneOffset;
+          const yaw = Math.atan2(tz, tx);
+          car.placeAtWorld(targetReturnX, targetReturnZ, yaw);
+          car.vx = 6.0;
+          car.strandedFor = 0;
+          item.stuckTimer = 0;
         }
       } else {
         item.stuckTimer = 0;
       }
     } else {
       item.stuckTimer = 0;
+      car.strandedFor = 0;
     }
     item._lastPos.set(car.pos.x, car.pos.z);
 

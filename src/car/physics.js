@@ -315,6 +315,17 @@ export class Car {
     this.perf.drift = perf.drift ?? 1;
   }
 
+  /** Apply full vehicle JSON configuration including performance, clearance, and geometry. */
+  setVehicleConfig(config = {}) {
+    if (config.perf) this.setPerf(config.perf);
+    if (config.rideHeight != null) this.rideHeight = config.rideHeight;
+    else if (config.groundClearance != null) this.rideHeight = config.groundClearance;
+    if (config.groundLift != null) this.groundLift = config.groundLift;
+    if (config.wheelRadius != null) this.wheelR = config.wheelRadius;
+    if (config.wheelbase != null) this.wheelBase = config.wheelbase;
+    if (config.track != null) this.trackWidth = config.track;
+  }
+
   /** Drop the car at world coordinates (x, z) with heading `yaw` (radians). */
   placeAtWorld(x, z, yaw = 0) {
     const y = (typeof this.track?.heightAt === 'function')
@@ -327,7 +338,8 @@ export class Car {
       this.up.set(0, 1, 0);
     }
 
-    this.pos.set(x, y + CAR.rideHeight, z);
+    const rh = this.rideHeight !== undefined ? this.rideHeight : CAR.rideHeight;
+    this.pos.set(x, y + rh, z);
     this._prevPos.copy(this.pos);
     this.renderPos.copy(this.pos);
 
@@ -1104,19 +1116,33 @@ export class Car {
        test never fires either — while the stage goes nowhere underneath it.
        Progress is the test that cannot be gamed: five metres in six seconds
        is three kilometres an hour, which nothing that is still racing does. */
-    if (this.s > this._advancedAt + 5) { this._advancedAt = this.s; this._sinceAdvance = 0; }
-    else this._sinceAdvance += dt;
+    if (this.track.freeRoam) {
+      /* In free-roam island mode, roads run in arbitrary 2D headings and s maps to world X.
+         A car is only stranded if it is completely beached with low speed while attempting throttle. */
+      const bad = (this.speed < 0.5 && !this.airborne && this.throttle > 0.1);
+      this.strandedFor = bad ? this.strandedFor + dt : 0;
+    } else {
+      if (this.s > this._advancedAt + 5) { this._advancedAt = this.s; this._sinceAdvance = 0; }
+      else this._sinceAdvance += dt;
 
-    /* _fC was filled by frameAt in the move branch above. */
-    const facing = this.forward.dot(_fC.tan);
-    const bad = facing < 0.15
-      || (this.speed < 1.8 && !this.airborne)
-      || this._sinceAdvance > 6;
-    this.strandedFor = bad ? this.strandedFor + dt : 0;
+      /* _fC was filled by frameAt in the move branch above. */
+      const facing = this.forward.dot(_fC.tan);
+      const bad = facing < 0.15
+        || (this.speed < 1.8 && !this.airborne)
+        || this._sinceAdvance > 6;
+      this.strandedFor = bad ? this.strandedFor + dt : 0;
+    }
   }
 
   /** Put the car back on the road, pointing down it, with its pace intact. */
   recover() {
+    if (this.track.freeRoam) {
+      this.strandedFor = 0;
+      this.vx = Math.max(this.vx, 6);
+      this.vertVel = 0; this.height = 0;
+      this.susp.fill(0); this.suspVel.fill(0);
+      return;
+    }
     /* `roadEnd`, so a car recovered in the run-off is put back where it was
        rather than teleported to forty metres short of the end of the RACE,
        which is upstream of the flag it has already crossed. */
@@ -1581,17 +1607,20 @@ export class Car {
 
     body.rotation.set(this.pitch, 0, this.roll);
     /* Ground clearance lift: raises vehicle chassis above wheels while tyres stay pinned to road */
-    const groundLift = this.groundLift !== undefined ? this.groundLift : 0.15;
+    const groundLift = this.groundLift !== undefined ? this.groundLift : (view?.groundLift ?? 0.15);
     body.position.y = groundLift + (this.bodyLift || 0) + this.squash;
 
-    for (let i = 0; i < 4; i++) {
+    const rideHeight = this.rideHeight !== undefined ? this.rideHeight : (view?.rideHeight ?? CAR.rideHeight);
+    const defaultWheelR = this.wheelR !== undefined ? this.wheelR : (view?.wheelRadius ?? CAR.wheelR);
+
+    for (let i = 0; i < wheels.length; i++) {
       const w = wheels[i];
       /* The root sits rideHeight above the surface, so a hub placed at wheelR
-         puts the contact patch a whole ride height in the air — the car looked
-         like it was hovering in every static shot. */
-      w.position.y = CAR.wheelR - CAR.rideHeight + this.susp[i];
+         puts the contact patch on the ground. */
+      const r = w.userData.wheelRadius || defaultWheelR;
+      w.position.y = r - rideHeight + (this.susp[i] || 0);
       if (w.userData.front) w.rotation.y = -this.steer;
-      w.userData.spin.rotation.x = -this.wheelSpin[i];
+      w.userData.spin.rotation.x = -(this.wheelSpin[i] || 0);
     }
   }
 }

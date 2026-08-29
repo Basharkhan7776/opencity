@@ -105,8 +105,8 @@ export class RivalDriver {
   recover(car) {
     const proj = projectOnRoute(this.route, car.pos.x, car.pos.z);
     const back = pointAtS(this.route, wrapS(this.route, proj.s - 8));
-    car.placeAt(back.x, back.z);
-    car.yaw = Math.atan2(back.tz, back.tx);
+    const yaw = Math.atan2(back.tz, back.tx);
+    car.placeAtWorld(back.x, back.z, yaw);
     car.vx = 6;
     car.vy = 0;
     car.r = 0;

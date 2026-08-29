@@ -1,17 +1,9 @@
 
 Optamization in the characters where we have points but when camera see the characters and vehecle points to generate will generate else not. Also do same optamization with assets like buildings, trees, and other objects.
 
+Back button working in while open map in mobile mode. fix in the mobile mode.
 
-CPU vehecles will wiped out or hide while runnning in race and pedestrians fix it, no consistent pattern. cpu vehecles stops when come something infront of it - make it when vehecle mesh come infront will stop for 5 seconds.
-
-Add Lights to vehicles, spread light infront of it, increase visibility in spots, enable in night. Add day cycle of 30 minutes as option.
-
-
-
-
-Add blur on outer side of the screen and white splashes after exceeding the speed by 80 km/h.
-
-In mobile on click to map open map and have back button, in race start screen add reload button to generate new tracks.
+Make the esc menu as clickable
 
 ---
 

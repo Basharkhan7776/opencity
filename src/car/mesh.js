@@ -259,11 +259,13 @@ export function buildCar(paletteIndex = 0) {
 }
 
 /**
- * Construct a car view hierarchy from a loaded GLTF scene (such as assets/vehicle/race.glb).
+ * Construct a car view hierarchy from a loaded GLTF scene and wheel assets with JSON configuration.
  * @param {object} gltf - Loaded GLTF object from GLTFLoader
- * @returns {{root:THREE.Group, body:THREE.Group, wheels:THREE.Object3D[], steerWheels:THREE.Object3D[], palette:object}}
+ * @param {object|THREE.Group} [wheelGltfOrMap=null] - Optional separate wheel GLTF or { front, back } map
+ * @param {object} [config={}] - Vehicle configuration object from JSON
+ * @returns {{root:THREE.Group, body:THREE.Group, wheels:THREE.Object3D[], steerWheels:THREE.Object3D[], palette:object, groundLift:number, rideHeight:number, wheelRadius:number, wheelBase:number, config:object}}
  */
-export function buildCarFromGLTF(gltf) {
+export function buildCarFromGLTF(gltf, wheelGltfOrMap = null, config = {}) {
   const scene = gltf.scene.clone(true);
   scene.updateMatrixWorld(true);
   const root = new THREE.Group();
@@ -296,7 +298,9 @@ export function buildCarFromGLTF(gltf) {
   const fz = ((wp('wheel-front-left')?.z || 0) + (wp('wheel-front-right')?.z || 0)) / 2;
   const bz = ((wp('wheel-back-left')?.z || 0) + (wp('wheel-back-right')?.z || 0)) / 2;
   const bakedWheelbase = Math.abs(fz - bz) || 1;
-  const k = CAR.wheelBase / bakedWheelbase;
+
+  const targetWheelbase = config.wheelbase || CAR.wheelBase;
+  const k = targetWheelbase / bakedWheelbase;
 
   const bakedHalfTrack = (() => {
     let s = 0, n = 0;
@@ -306,25 +310,42 @@ export function buildCarFromGLTF(gltf) {
     }
     return n ? s / n : 0;
   })();
-  const TRACK_GAIN = 1.25;
+
+  const outwardF = config.wheelOutwardOffsetFront ?? config.wheelOutwardOffset ?? 0;
+  const outwardR = config.wheelOutwardOffsetRear ?? config.wheelOutwardOffset ?? 0;
+
+  const halfTrackF = (config.trackFront ? config.trackFront * 0.5 : (config.track ? config.track * 0.5 : (bakedHalfTrack * k * TRACK_GAIN || CAR.track * 0.5))) + outwardF;
+  const halfTrackR = (config.trackRear ? config.trackRear * 0.5 : (config.track ? config.track * 0.5 : (bakedHalfTrack * k * TRACK_GAIN || CAR.track * 0.5))) + outwardR;
 
   for (const key of Object.keys(wheelNodes)) {
     if (wheelNodes[key]) wheelNodes[key].removeFromParent();
   }
-  if (bodyNode) bodyNode.scale.multiplyScalar(k);
+
+  const bodyScale = config.bodyScale !== undefined ? (typeof config.bodyScale === 'number' ? config.bodyScale : 1.0) : 1.0;
+  if (bodyNode) bodyNode.scale.multiplyScalar(k * bodyScale);
 
   const shellWrap = new THREE.Group();
+  const bodyOffset = config.bodyOffset || { x: 0, y: 0, z: 0 };
+
   if (bodyNode) {
     const bottom = new THREE.Box3().setFromObject(bodyNode).min.y;
-    shellWrap.position.y = -0.26 - bottom;
+    shellWrap.position.set(bodyOffset.x || 0, -0.26 - bottom + (bodyOffset.y || 0), bodyOffset.z || 0);
     if (fz > bz) shellWrap.rotation.y = Math.PI;
+    if (config.bodyRotationY) shellWrap.rotation.y += config.bodyRotationY;
     shellWrap.add(bodyNode);
     bodyGroup.add(shellWrap);
   } else {
-    bodyGroup.add(scene);
+    shellWrap.position.set(bodyOffset.x || 0, bodyOffset.y || 0, bodyOffset.z || 0);
+    shellWrap.add(scene);
+    bodyGroup.add(shellWrap);
   }
 
   root.add(bodyGroup);
+
+  const wheelRadiusF = config.wheelRadiusFront || config.wheelRadius || CAR.wheelR;
+  const wheelRadiusR = config.wheelRadiusRear || config.wheelRadius || CAR.wheelR;
+  const wheelScaleF = config.wheelScaleFront || config.wheelScale || 1.0;
+  const wheelScaleR = config.wheelScaleRear || config.wheelScale || 1.0;
 
   const wheels = [];
   const steerWheels = [];
@@ -337,40 +358,108 @@ export function buildCarFromGLTF(gltf) {
 
   positions.forEach(({ front, left, key }) => {
     const hub = new THREE.Group();
+    const halfTrack = front ? halfTrackF : halfTrackR;
+    const wheelR = front ? wheelRadiusF : wheelRadiusR;
+    const wheelScale = front ? wheelScaleF : wheelScaleR;
+
     hub.position.set(
-      (left ? -1 : 1) * (bakedHalfTrack * k * TRACK_GAIN || CAR.track * 0.5),
-      CAR.wheelR,
-      front ? -CAR.wheelBase * 0.5 : CAR.wheelBase * 0.5
+      (left ? -1 : 1) * halfTrack,
+      wheelR,
+      front ? -targetWheelbase * 0.5 : targetWheelbase * 0.5
     );
+
     const spin = new THREE.Group();
-    const rawWheel = wheelNodes[key];
-    if (rawWheel) {
-      rawWheel.position.set(0, 0, 0);
-      rawWheel.scale.multiplyScalar(k);
-      rawWheel.rotation.y = Math.PI;
-      const box = new THREE.Box3().setFromObject(rawWheel);
-      spin.position.y = -box.min.y - CAR.wheelR;
-      spin.add(rawWheel);
+    let wheelMesh = null;
+
+    if (wheelGltfOrMap) {
+      const srcGltf = (front && wheelGltfOrMap.front) ? wheelGltfOrMap.front
+        : (!front && wheelGltfOrMap.back) ? wheelGltfOrMap.back
+        : (wheelGltfOrMap.scene ? wheelGltfOrMap : null);
+      if (srcGltf?.scene) {
+        wheelMesh = srcGltf.scene.clone(true);
+        wheelMesh.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(wheelMesh);
+        const center = box.getCenter(new THREE.Vector3());
+        wheelMesh.position.sub(center);
+        wheelMesh.scale.setScalar(wheelScale);
+        // Outer wheel face is on +X in raw GLB:
+        // Left wheel (at -X) rotates 180° around Y (Math.PI) to face outward (-X).
+        // Right wheel (at +X) rotates 0° to face outward (+X).
+        wheelMesh.rotation.y = left ? Math.PI : 0;
+      }
     }
+
+    if (!wheelMesh) {
+      const rawWheel = wheelNodes[key];
+      if (rawWheel) {
+        rawWheel.position.set(0, 0, 0);
+        rawWheel.scale.multiplyScalar(k * wheelScale);
+        rawWheel.rotation.y = left ? Math.PI : 0;
+        const box = new THREE.Box3().setFromObject(rawWheel);
+        spin.position.y = -box.min.y - wheelR;
+        wheelMesh = rawWheel;
+      }
+    }
+
+    if (wheelMesh) {
+      spin.add(wheelMesh);
+    }
+
     hub.add(spin);
     hub.userData.spin = spin;
     hub.userData.front = front;
+    hub.userData.left = left;
+    hub.userData.wheelRadius = wheelR;
+
     wheels.push(hub);
     if (front) steerWheels.push(hub);
     root.add(hub);
   });
 
-  return { root, body: bodyGroup, wheels, steerWheels, palette: PALETTES[0] };
+  const groundLift = config.groundLift !== undefined ? config.groundLift : 0.15;
+  const rideHeight = config.groundClearance || config.rideHeight || CAR.rideHeight;
+
+  return {
+    root,
+    body: bodyGroup,
+    wheels,
+    steerWheels,
+    palette: PALETTES[0],
+    groundLift,
+    rideHeight,
+    wheelRadius: config.wheelRadius || CAR.wheelR,
+    wheelBase: targetWheelbase,
+    config,
+  };
 }
 
 /**
- * Asynchronously load a car GLB asset (such as assets/vehicle/race.glb) and build a view object for it.
- * @param {string} url - Path to GLB file
- * @returns {Promise<{root:THREE.Group, body:THREE.Group, wheels:THREE.Object3D[], steerWheels:THREE.Object3D[], palette:object}>}
+ * Asynchronously load a car GLB asset and its wheels with JSON configuration.
+ * @param {string|object} configOrUrl - Path to GLB file or vehicle JSON configuration object
+ * @param {string|object} [wheelOpt=null] - Optional path to wheel GLB or { front, back }
+ * @returns {Promise<{root:THREE.Group, body:THREE.Group, wheels:THREE.Object3D[], steerWheels:THREE.Object3D[], palette:object, groundLift:number, rideHeight:number, wheelRadius:number, wheelBase:number, config:object}>}
  */
-export async function loadCarGLB(url = '/assets/vehicle/race.glb') {
+export async function loadCarGLB(configOrUrl = '/assets/vehicle/race.glb', wheelOpt = null) {
   const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
   const loader = new GLTFLoader();
-  const gltf = await loader.loadAsync(url);
-  return buildCarFromGLTF(gltf);
+
+  const config = typeof configOrUrl === 'string'
+    ? { url: configOrUrl, wheel: wheelOpt }
+    : { ...configOrUrl };
+
+  const bodyPromise = loader.loadAsync(config.url || '/assets/vehicle/race.glb');
+
+  let wheelPromise = null;
+  if (config.wheel) {
+    if (typeof config.wheel === 'string') {
+      wheelPromise = loader.loadAsync(config.wheel).catch(() => null);
+    } else if (typeof config.wheel === 'object') {
+      const pFront = config.wheel.front ? loader.loadAsync(config.wheel.front).catch(() => null) : null;
+      const pBack = config.wheel.back ? loader.loadAsync(config.wheel.back).catch(() => null) : null;
+      wheelPromise = Promise.all([pFront, pBack]).then(([front, back]) => ({ front, back }));
+    }
+  }
+
+  const [bodyGltf, wheelGltfOrMap] = await Promise.all([bodyPromise, wheelPromise]);
+  return buildCarFromGLTF(bodyGltf, wheelGltfOrMap, config);
 }

@@ -176,11 +176,16 @@ export class Touch {
     const minimapBtn = { id: 'minimap', x: w - mmPad - mmR * 2, y: mmPad, w: mmR * 2, h: mmR * 2, label: 'MAP', kind: 'map' };
 
     // Fullscreen Map Back Button
-    const cardW = Math.min(w - 24, 780);
-    const cardH = Math.min(h - 24, 680);
+    const pad = 12;
+    const cardW = Math.min(w - pad * 2, 780);
+    const cardH = Math.min(h - pad * 2, 680);
     const cardX = (w - cardW) / 2;
     const cardY = (h - cardH) / 2;
-    const mapBackBtn = { id: 'mapBack', x: cardX + cardW - 100, y: cardY + 12, w: 88, h: 36, label: '◀ BACK', kind: 'map' };
+    const backW = 88;
+    const backH = 34;
+    const backX = cardX + cardW - backW - 18;
+    const backY = cardY + 12;
+    const mapBackBtn = { id: 'mapBack', x: backX, y: backY, w: backW, h: backH, label: '◀ BACK', kind: 'map' };
 
     // --- Menu Controls ---
     const dpadSize = Math.max(54, Math.min(64, short * 0.16));
@@ -405,6 +410,7 @@ export class Touch {
       menuLeftPressed: activeRoles.has('menuLeft'),
       menuRightPressed: activeRoles.has('menuRight'),
       confirmPressed: activeRoles.has('confirm'),
+      mapPressed: activeRoles.has('map'),
       layout: L,
     };
   }

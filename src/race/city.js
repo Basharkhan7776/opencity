@@ -90,6 +90,7 @@ export class CityRace {
       const view = views[i];
       this.scene.add(view.root);
       const car = new Car(this.track, { palette: i + 1, ai: true, perf: spec.perf });
+      car.setVehicleConfig(spec);
       const lane = (i % 2 === 0 ? 1 : -1) * (0.6 + i * 0.12);
       const driver = new RivalDriver(this.route, {
         difficulty: this.difficulty,
@@ -109,7 +110,7 @@ export class CityRace {
     }
 
     this._order = [...this.entries, this.playerSlot];
-    this._settle(this._order.length);
+    this._settle();
     this.countdown.arm();
     this.live = true;
     this.over = false;
@@ -145,12 +146,14 @@ export class CityRace {
       const sub = Math.min(4, Math.max(1, Math.ceil(dt / (1 / 120))));
       const h = dt / sub;
       for (let i = 0; i < sub; i++) e.car.step(h, input);
-      if (e.driver.stuckFor > 3.2 || e.car.strandedFor > 4) e.driver.recover(e.car);
+      if (e.driver.stuckFor > 3.5 || e.car.strandedFor > 4.5 || e.car.pos.y < (this.track?.waterLevel ?? 0) - 0.5) {
+        e.driver.recover(e.car);
+      }
       this._progress(e);
     }
     this._progress(this.playerSlot);
     this._contacts(all);
-    this._settle(1);
+    this._settle();
 
     if (this.playerSlot.finished && !this.over) this._finish();
 
@@ -163,7 +166,7 @@ export class CityRace {
     return {
       position: pos,
       fieldSize: this._order.length,
-      lap: this.loop ? this.playerSlot.lap + 1 : 0,
+      lap: this.loop ? Math.min(this.laps, this.playerSlot.lap + 1) : 0,
       laps: this.loop ? this.laps : 0,
       time: this.playerSlot.finished ? this.playerSlot.time : this.clock,
       countdown: this.countdown.display(),
@@ -172,6 +175,7 @@ export class CityRace {
   }
 
   positionOf(slot) {
+    if (!slot) return 1;
     const i = this._order.indexOf(slot);
     return i < 0 ? this._order.length : i + 1;
   }
@@ -254,9 +258,8 @@ export class CityRace {
     if (e.finished) return;
     const route = this.route;
     const proj = projectOnRoute(route, e.car.pos.x, e.car.pos.z);
-    /* Standings only crawl forward along the route. A car on a parallel
-       street must not snap to a later segment and steal a place. */
-    e.pathS = advanceS(e.pathS, proj.s, route.length, route.loop, 8);
+    /* Standings crawl forward along the route smoothly. */
+    e.pathS = advanceS(e.pathS, proj.s, route.length, route.loop, 40);
     e.progress = e.lap * route.length + e.pathS;
 
     const cps = route.checkpoints;
@@ -267,17 +270,25 @@ export class CityRace {
     const fx = Math.cos(gate.yaw), fz = Math.sin(gate.yaw);
     const along = (e.car.pos.x - gate.x) * fx + (e.car.pos.z - gate.z) * fz;
     const lat = (e.car.pos.x - gate.x) * (-fz) + (e.car.pos.z - gate.z) * fx;
+    const distToGate = Math.hypot(e.car.pos.x - gate.x, e.car.pos.z - gate.z);
+    const gateRadius = Math.max(gate.radius * 1.6, 12.0);
+
     if (e._cpWatch !== cp) {
       e._cpWatch = cp;
       e._gateAlong = along;
     }
     const prevAlong = e._gateAlong;
     e._gateAlong = along;
-    const inHoop = Math.abs(along) < 3.4 && Math.abs(lat) < gate.radius * 1.08;
-    const crossed = prevAlong != null
-      && prevAlong < 0.8 && along >= 0
-      && Math.abs(lat) < gate.radius * 1.08;
-    if (inHoop || crossed) {
+
+    const inHoop = (distToGate < gateRadius && Math.abs(along) < 6.0) || (Math.abs(along) < 4.5 && Math.abs(lat) < gateRadius);
+    const crossed = (prevAlong != null && prevAlong < 2.0 && along >= -0.5 && Math.abs(lat) < gateRadius);
+    const isLastGate = route.loop ? (cp === 0) : (cp === n - 1);
+    const passedS = !isLastGate && e.pathS >= gate.s && (e.pathS - gate.s) < 80;
+
+    const hitGate = inHoop || crossed || passedS;
+    const hitSprintFinish = !route.loop && cp === n - 1 && (hitGate || e.pathS >= route.length - 3.0 || distToGate < gateRadius);
+
+    if (hitGate || hitSprintFinish) {
       if (route.loop && cp === 0 && e.cp > 0) {
         e.lap++;
         const lapT = this.clock - e.lapClock;
@@ -286,22 +297,22 @@ export class CityRace {
         if (e.lap >= this.laps) {
           e.finished = true;
           e.time = this.clock;
+          e.progress = this.laps * route.length + 10;
           return;
         }
       } else if (!route.loop && cp === n - 1) {
         e.finished = true;
         e.time = this.clock;
+        e.progress = route.length + 10;
         return;
       }
       e.cp = e.cp + 1;
-      if (route.loop && e.cp % n === 0) {
-        /* next is the start/finish; handled above on the subsequent pass */
-      }
     }
   }
 
   _finish() {
     this.over = true;
+    this._settle();
     const pos = this.positionOf(this.playerSlot);
     this.results = {
       pos,
@@ -313,24 +324,24 @@ export class CityRace {
     };
   }
 
-  _settle(passes) {
-    const beats = (b, a) => {
-      if (b.finished && a.finished) return b.time < a.time;
-      if (b.finished !== a.finished) return b.finished;
-      return b.progress > a.progress + HYST;
-    };
-    for (let p = 0; p < passes; p++) {
-      let moved = false;
-      for (let i = 0; i < this._order.length - 1; i++) {
-        if (beats(this._order[i + 1], this._order[i])) {
-          const t = this._order[i];
-          this._order[i] = this._order[i + 1];
-          this._order[i + 1] = t;
-          moved = true;
-        }
+  _settle() {
+    this._order.sort((a, b) => {
+      // 1. Finished cars rank above unfinished cars by finish time
+      if (a.finished && b.finished) {
+        return a.time - b.time;
       }
-      if (!moved) break;
-    }
+      if (a.finished !== b.finished) {
+        return a.finished ? -1 : 1;
+      }
+      // 2. Both still racing: rank by lap, then checkpoints passed, then progress
+      if (a.lap !== b.lap) {
+        return b.lap - a.lap;
+      }
+      if (a.cp !== b.cp) {
+        return b.cp - a.cp;
+      }
+      return b.progress - a.progress;
+    });
   }
 
   _contacts(all) {
