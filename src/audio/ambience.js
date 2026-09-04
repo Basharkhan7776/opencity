@@ -209,6 +209,26 @@ export class Ambience {
     this.gull.connect(dest);
     this.gullTimer = this.rand.f(3, 9);
 
+    /* Night crickets: band-passed noise, amplitude-modulated. */
+    this.crickets = node(ctx.createGain());
+    this.crickets.gain.value = 0.0001;
+    this.crickets.connect(dest);
+    const cHi = bq('highpass', 3800, 0.7);
+    const cBp = bq('bandpass', 5600, 4.5);
+    const cAm = node(ctx.createGain());
+    cAm.gain.value = 0.5;
+    this.sources.push(noiseSource(ctx, buffers.white, cHi, { rate: 0.7, offset: 0.61 }));
+    cHi.connect(cBp); cBp.connect(cAm); cAm.connect(this.crickets);
+    const chirp = lfo(28.3);
+    chirp.g.gain.value = 0.42;
+    chirp.g.connect(cAm.gain);
+    this._cricketAm = cAm;
+
+    this.birds = node(ctx.createGain());
+    this.birds.gain.value = 0.85;
+    this.birds.connect(dest);
+    this.birdTimer = this.rand.f(2, 8);
+
     this.swell = 0;
     this.near = 0;
     this.side = 0;
@@ -261,12 +281,16 @@ export class Ambience {
     this.foam.tune(1, 2200 + n * 4200, t, 0.5);
 
     const swell = 1 + this.swell * 0.14;
-    set(this.surf.gain, 1, 0.1);
-    set(this.boom.lvl.gain, 0.0001 + 0.34 * Math.pow(n, 0.75) * swell * duck);
-    set(this.wash.lvl.gain, 0.0001 + 0.26 * n * swell * duck);
+    /* Spec: ocean and gulls only once you are out near the coast (rr > 750).
+       Tests that omit `rr` still hear water from the shoreDistance fade. */
+    const coastal = s.rr != null ? s.rr > 750 : n > 0.12;
+    const coastGate = coastal ? 1 : 0;
+    set(this.surf.gain, 0.0001 + coastGate, 0.22);
+    set(this.boom.lvl.gain, 0.0001 + 0.34 * Math.pow(n, 0.75) * swell * duck * coastGate);
+    set(this.wash.lvl.gain, 0.0001 + 0.26 * n * swell * duck * coastGate);
     /* Foam is the first thing distance takes away, so it is squared: audible
        from the roadside, gone from the top of the cliff. */
-    set(this.foam.lvl.gain, 0.0001 + 0.17 * n * n * swell * duck);
+    set(this.foam.lvl.gain, 0.0001 + 0.17 * n * n * swell * duck * coastGate);
 
     /* Which side the water is on, and how wide each band is allowed to be.
      *
@@ -289,8 +313,7 @@ export class Ambience {
        speed because the relative airflow does rise, but the level does not —
        that is surface.js's job and doubling it up is how you get mud. */
     const exposure = lerp(0.55, 1, clamp(s.openness ?? lerp(0.4, 1, n), 0, 1));
-    const air = 0.052 * exposure * lerp(1, 0.5, fast);
-    set(this.seaWind.gain, 0.0001 + air);
+    const air = 0.052 * exposure * lerp(1, 0.5, fast) * (coastal ? 1 : 0.25);
     for (const side of [this.airL, this.airR]) {
       set(side.lo.frequency, 900 + s.speed * 9, 0.4);
       set(side.hi.frequency, 200 + n * 60, 0.4);
@@ -300,14 +323,93 @@ export class Ambience {
        them, and on the clock — and the interval is redrawn every time, so the
        calls never fall into a rhythm. */
     this.gullTimer -= dt;
-    const canCall = n > 0.22 && s.speed < 46 && !s.airborne;
+    const canCall = coastal && n > 0.18 && s.speed < 46 && !s.airborne;
     if (this.gullTimer <= 0) {
       this.gullTimer = r.f(GULL_MIN, GULL_MAX) * lerp(1.8, 1.0, n);
       if (canCall) {
         this.cry(t, clamp(this.side * r.f(0.2, 0.9) + r.f(-0.25, 0.25), -1, 1),
-          0.16 * n * (1 - smoothstep(20, 46, s.speed)));
+          0.24 * n * (1 - smoothstep(20, 46, s.speed)));
       }
     }
+
+    /* Time of day: dawn crows/birds, daytime wind, night crickets. */
+    const tod = clamp(s.timeOfDay ?? 0.3, 0, 1);
+    const dawn = dawnAmt(tod);
+    const night = nightAmt(tod);
+    const day = clamp(1 - night - dawn * 0.65, 0, 1);
+    const dayWind = 0.088 * day * lerp(1, 0.35, fast);
+    set(this.seaWind.gain, 0.0001 + air + dayWind);
+    set(this.crickets.gain, 0.0001 + 0.16 * night * lerp(1, 0.3, fast));
+
+    this.birdTimer -= dt;
+    if (this.birdTimer <= 0) {
+      this.birdTimer = r.f(2.2, 7.5) * lerp(1.4, 1, dawn);
+      if (dawn > 0.12 && s.speed < 42) {
+        const lvl = 0.2 * dawn * (1 - smoothstep(10, 42, s.speed));
+        const pan = r.f(-0.75, 0.75);
+        if (r.f(0, 1) < 0.4) this.crow(t, pan, lvl * 1.2);
+        else this.tweet(t, pan, lvl);
+      }
+    }
+  }
+
+  crow(t, pan, level) {
+    if (level < 0.006) return;
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = 3.2;
+    const g = ctx.createGain();
+    g.gain.value = 0;
+    const p = ctx.createStereoPanner();
+    p.pan.value = pan;
+    osc.connect(bp); bp.connect(g); g.connect(p); p.connect(this.birds);
+    osc.frequency.setValueAtTime(520, t);
+    osc.frequency.exponentialRampToValueAtTime(280, t + 0.28);
+    bp.frequency.setValueAtTime(900, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(level * 0.9, t + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.32);
+    osc.start(t);
+    osc.stop(t + 0.36);
+    osc.onended = () => {
+      osc.disconnect(); bp.disconnect(); g.disconnect(); p.disconnect();
+    };
+  }
+
+  tweet(t, pan, level) {
+    if (level < 0.006) return;
+    const ctx = this.ctx;
+    const r = this.rand;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = 8;
+    const g = ctx.createGain();
+    g.gain.value = 0;
+    const p = ctx.createStereoPanner();
+    p.pan.value = pan;
+    osc.connect(bp); bp.connect(g); g.connect(p); p.connect(this.birds);
+    const f0 = r.f(1800, 2800);
+    const n = r.i(2, 4);
+    let at = t;
+    for (let i = 0; i < n; i++) {
+      const dur = r.f(0.05, 0.09);
+      osc.frequency.setValueAtTime(f0 * r.f(0.92, 1.08), at);
+      osc.frequency.exponentialRampToValueAtTime(f0 * r.f(1.05, 1.25), at + dur);
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(level, at + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+      at += dur + r.f(0.04, 0.08);
+    }
+    osc.start(t);
+    osc.stop(at + 0.05);
+    osc.onended = () => {
+      osc.disconnect(); bp.disconnect(); g.disconnect(); p.disconnect();
+    };
   }
 
   /**
@@ -390,4 +492,19 @@ export class Ambience {
 function lerpAmp(i, n) {
   if (n < 2) return 1;
   return i === 1 ? 1 : i === 0 ? 0.82 : 0.6;
+}
+
+function dawnAmt(tod) {
+  if (tod >= 0.05 && tod <= 0.18) return 1;
+  if (tod > 0.02 && tod < 0.05) return (tod - 0.02) / 0.03;
+  if (tod > 0.18 && tod < 0.24) return 1 - (tod - 0.18) / 0.06;
+  return 0;
+}
+
+function nightAmt(tod) {
+  if (tod >= 0.62 && tod <= 0.96) return 1;
+  if (tod > 0.54 && tod < 0.62) return (tod - 0.54) / 0.08;
+  if (tod > 0.96) return 1 - (tod - 0.96) / 0.04;
+  if (tod < 0.07) return 1 - tod / 0.07;
+  return 0;
 }

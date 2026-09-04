@@ -36,7 +36,7 @@ import { noiseSource, saturationCurve, harmonicWave } from './noise.js';
 
 const REV_MAX = 7400;            // matches car/physics.js, for rpm → Hz
 const REV_IDLE = 1050;
-const FIRINGS_PER_REV = 2;       // four cylinders, four stroke
+const FIRINGS_PER_REV = 1;       // deeper than the original I4 (2 pulses)
 const TAU = 0.03;                // parameter smoothing, seconds
 
 export class EngineVoice {
@@ -58,7 +58,7 @@ export class EngineVoice {
 
     const shaper = node(ctx.createWaveShaper());
     shaper.curve = saturationCurve(2.4);
-    shaper.oversample = '2x';
+    shaper.oversample = 'none';
 
     /* Saturating an asymmetric pulse train leaves a DC step that moves with
        load. It is inaudible on its own and it eats headroom on the master bus
@@ -280,18 +280,18 @@ export class EngineVoice {
        under it and the exhaust event is left exposed, which is the whole
        reason a gearchange is audible from outside a car. */
     set(this.drive.gain,
-      lerp(1.05, 3.4, load) * lerp(0.9, 1.25, rpm) * (1 - 0.42 * this.shift));
+      lerp(1.05, 3.4, load) * lerp(0.9, 1.25, rpm) * (1 - 0.55 * this.shift));
 
     /* Brightness. Three terms, and they are separable on purpose: the engine
        has to get brighter with rpm (pulses arrive faster), brighter with load
        (harder combustion), and it must not do either when it is coasting. */
-    set(this.tone.frequency, clamp(340 + fire * 4.2 + load * 3400 + rpm * 2400, 200, 14000), 0.05);
-    set(this.formant.frequency, clamp(fire * 2.6 + 140, 80, 5000), 0.05);
-    set(this.formant.gain, 3 + load * 5);
+    set(this.tone.frequency, clamp(200 + fire * 3.6 + load * 2600 + rpm * 1600, 120, 9000), 0.05);
+    set(this.formant.frequency, clamp(fire * 2.0 + 80, 50, 2800), 0.05);
+    set(this.formant.gain, 4 + load * 4);
     /* Rides up with revs but stays inside the presence band at both ends, and
        lifts hard with load — this is the bark, and it has to be absent when
        the car is coasting or every corner entry sounds like a downshift. */
-    set(this.formant2.frequency, clamp(760 + fire * 3.4 + load * 600, 500, 3600), 0.05);
+    set(this.formant2.frequency, clamp(420 + fire * 2.6 + load * 350, 280, 2000), 0.05);
     set(this.formant2.gain, 1.5 + load * 7.5 * lerp(0.55, 1, rpm));
 
     set(this.exhaustBand.frequency, clamp(95 + fire * 1.7 + load * 420, 60, 6000), 0.05);
@@ -308,8 +308,8 @@ export class EngineVoice {
     set(this.overrunBand.frequency, 700 + rpm * 1800 + this.crackle * 900, 0.02);
     set(this.overrun.gain, 0.0001 + 0.075 * overrun * this.crackle, 0.015);
 
-    const level = (0.20 + 0.20 * load + 0.13 * rpm) * (1 - 0.18 * this.shift);
-    set(this.out.gain, level, 0.02);
+    const level = (0.12 + 0.12 * load + 0.08 * rpm) * (1 - 0.42 * this.shift);
+    set(this.out.gain, level, 0.012);
   }
 
   /**
@@ -334,7 +334,7 @@ export class EngineVoice {
     /* A shift at idle off the throttle should be near silent. There is no
        pressure in the system to release, and barking anyway is how a car ends
        up sounding like it is fighting itself in the pit lane. */
-    const level = (0.14 + 0.62 * this.load + 0.26 * rpm) * lerp(0.3, 1, throttle);
+    const level = (0.08 + 0.36 * this.load + 0.15 * rpm) * lerp(0.3, 1, throttle);
     if (level < 0.03) return;
 
     const dur = up ? 0.085 : 0.16;

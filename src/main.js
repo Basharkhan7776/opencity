@@ -11,7 +11,7 @@
  */
 import * as THREE from 'three';
 import { FlatTrack, ROAD_WIDTH, INTER_X, WATER_LEVEL } from './flat/FlatTrack.js';
-import { CENTER, ISLAND_R } from './flat/Island.js';
+import { CENTER, ISLAND_R, coastAt } from './flat/Island.js';
 import { buildFlatWorld } from './flat/FlatWorld.js';
 import { Pedestrians, PED_RADIUS } from './flat/Pedestrians.js';
 import { Traffic, TRAFFIC_COUNT } from './flat/Traffic.js';
@@ -26,6 +26,8 @@ import { celMaterial } from './render/cel.js';
 import { CelPipeline } from './render/outline.js';
 import { clamp, formatTime } from './core/util.js';
 import { generateRoute } from './race/path.js';
+import { Audio } from './audio/index.js';
+import { MUSIC_STYLES, MUSIC_STYLE_LABELS } from './audio/music.js';
 import {
   CityRace,
   RACE_LENGTHS, RACE_LENGTH_LABELS,
@@ -35,13 +37,8 @@ import {
   loadMedals, saveMedals, awardPlace, fillOf, MEDAL_RANKS,
 } from './race/medals.js';
 
-/* Silent audio stub — real Audio engine disabled for now. */
-const Audio = class {
-  start() {}
-  stop() {}
-  update() {}
-  impact() {}
-};
+const AUDIO_KEY = 'opencity.audio';
+const AUDIO_VOL = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
 /* The rally stage's light rig, moved over verbatim so the comic look
    survives the flat land. See the original main.js for the reasoning. */
@@ -293,14 +290,18 @@ class Game {
     });
 
     this.audio = new Audio();
-    let woke = false;
+    this.audioPrefs = this._loadAudio();
+    this._applyAudio(false);
     const wake = () => {
-      this.audio.start();
-      if (woke) return;
-      woke = true;
+      if (this.paused) return;
+      this.audio.start().then(() => this._applyAudio());
     };
-    addEventListener('pointerdown', wake, { once: true });
-    addEventListener('keydown', wake, { once: true });
+    addEventListener('pointerdown', wake);
+    addEventListener('keydown', wake);
+    addEventListener('touchstart', wake, { passive: true });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && !this.paused) wake();
+    });
 
     // Interactive pointer clicks on Minimap, Fullscreen Map Back button, and Race Setup reload
     const handleUIPointer = (e) => {
@@ -507,6 +508,18 @@ class Game {
         race: this.race,
         showMap: this.showMap,
       });
+      this.audio.update(dt, {
+        speed: 0,
+        rpm: this.player.rpm,
+        throttle: 0,
+        brake: 1,
+        timeOfDay: this.timeOfDay,
+        horn: this.input.horn,
+        listenerX: this.player.pos.x,
+        listenerZ: this.player.pos.z,
+        listenerYaw: this.player.yaw,
+        others: this._otherCars(),
+      });
       return;
     }
 
@@ -590,23 +603,41 @@ class Game {
     /* Celestial orbit (Sun / Moon) and shadow tracking */
     this._updateDayNight(dt);
 
+    this._crowdEv = { nearest: 1e9, walking: 0, hit: false };
+    if (this.ambientEnabled) {
+      if (this.pedestrians) {
+        this._crowdEv = this.pedestrians.update(dt, p.pos.x, p.pos.z, p)
+          || this._crowdEv;
+      }
+      if (this.traffic) this.traffic.update(dt, p, this.pedestrians);
+    }
+
+    const coast = coastAt(p.pos.x, p.pos.z);
+    const onDeck = this.track.roadLift ? this.track.roadLift(p.pos.x, p.pos.z) > 0.04 : true;
     this.audio.update(dt, {
       speed: p.speed,
-      rpm: p.rpm / MAX_RPM,
+      rpm: p.rpm,
       gear: p.gear,
       throttle: p.throttle,
       brake: p.brake,
       handbrake: p.handbrake,
       slipAngle: p.slipAngle,
       wheelSlip: Math.max(...p.wheelSlip),
-      offRoad: p.offRoad,
+      offRoad: onDeck ? 0 : 1,
       airborne: p.airborne,
       landingForce: p.landingForce,
-      /* Coastal ambient surf & open sky breeze */
-      shoreDistance: Math.max(0, 1800 - Math.hypot(p.pos.x - 3000, p.pos.z - 0)),
+      shoreDistance: Math.max(0, coast.edge - coast.rr),
       shoreDrop: Math.max(0, p.pos.y),
-      oceanSide: Math.sign(p.pos.x - 3000),
-      openness: 1.0,
+      oceanSide: coast.rr > 1 ? coast.dx / coast.rr : 0,
+      openness: coast.rr > 520 ? 1 : 0.45,
+      rr: coast.rr,
+      timeOfDay: this.timeOfDay,
+      horn: this.input.horn,
+      crowd: this._crowdEv,
+      listenerX: p.pos.x,
+      listenerZ: p.pos.z,
+      listenerYaw: p.yaw,
+      others: this._otherCars(),
     });
 
     this.hud.race = this.race ? this.race.hud() : null;
@@ -620,10 +651,49 @@ class Game {
       showMap: this.showMap,
     });
 
-    if (this.ambientEnabled) {
-      if (this.pedestrians) this.pedestrians.update(dt, p.pos.x, p.pos.z, p);
-      if (this.traffic) this.traffic.update(dt, p, this.pedestrians);
+    if (this.race?.countdown) {
+      const tone = this.race.countdown.takeTone();
+      if (tone === 'go') this.audio.startTone(true);
+      else if (tone === 'count') this.audio.startTone(false);
     }
+    if (this.race?.over && !this._finishSounded) {
+      this._finishSounded = true;
+      this.audio.finishTone('flag', this.race.results?.pos === 1);
+    }
+  }
+
+  /** Traffic in free-roam, race rivals on a circuit — anything with an engine besides the player. */
+  _otherCars() {
+    const out = [];
+    if (this.race?.entries) {
+      for (let i = 0; i < this.race.entries.length; i++) {
+        const e = this.race.entries[i];
+        const c = e.car;
+        if (!c) continue;
+        out.push({
+          id: e,
+          x: c.pos.x,
+          z: c.pos.z,
+          rpm: c.rpm,
+          speed: c.speed,
+          throttle: c.throttle || 0,
+        });
+      }
+    } else if (this.traffic?.cars) {
+      for (let i = 0; i < this.traffic.cars.length; i++) {
+        const item = this.traffic.cars[i];
+        if (!item.active || !item.car) continue;
+        out.push({
+          id: item,
+          x: item.car.pos.x,
+          z: item.car.pos.z,
+          rpm: item.car.rpm,
+          speed: item.car.speed,
+          throttle: item.car.throttle || 0,
+        });
+      }
+    }
+    return out;
   }
 
   driverInput() {
@@ -707,6 +777,7 @@ class Game {
     m.liveRace = !!this.race;
     m.setup = this.raceSetup;
     m.preview = this.racePreview;
+    m.audioPrefs = this.audioPrefs;
     m.medals = this.medals;
     if (this._switching) return;
     m.gfx = this.gfx;
@@ -735,7 +806,7 @@ class Game {
         else if (pick === 'CHANGE VEHICLE') {
           m.view = 'vehicles';
           m.index = this.vehicleIndex;
-        } else if (pick === 'SETTINGS') { m.view = 'settings'; m.index = 0; }
+        } else if (pick === 'SETTINGS') { m.view = 'settings'; m.index = 0; m.sheet = 'graphics'; }
         else if (pick === 'RESTART') {
           this.respawn();
           this.togglePause();
@@ -816,26 +887,44 @@ class Game {
   _settingsMenuStep() {
     const m = this.menu;
     const i = this.input;
-    const g = this.gfx;
-    const rows = 6;
+    const audio = m.sheet === 'audio';
+    const rows = audio ? 5 : 7;
     if (i.menuUpPressed) m.index = (m.index + rows - 1) % rows;
     else if (i.menuDownPressed) m.index = (m.index + 1) % rows;
     else if (i.menuLeftPressed || i.menuRightPressed) {
       const dir = i.menuRightPressed ? 1 : -1;
       if (m.index === 0) {
-        g.resIdx = (g.resIdx + dir + GFX_RES.length) % GFX_RES.length;
-      } else if (m.index === 1) {
-        g.distIdx = (g.distIdx + dir + GFX_DIST.length) % GFX_DIST.length;
-      } else if (m.index === 2) {
-        g.pedIdx = (g.pedIdx + dir + GFX_PEDS.length) % GFX_PEDS.length;
-      } else if (m.index === 3) {
-        g.trafficIdx = (g.trafficIdx + dir + GFX_TRAFFIC.length) % GFX_TRAFFIC.length;
-      } else if (m.index === 4) {
-        g.shadowIdx = (g.shadowIdx + dir + GFX_SHADOWS.length) % GFX_SHADOWS.length;
-      } else if (m.index === 5) {
-        g.timeIdx = (g.timeIdx + dir + TIME_MODES.length) % TIME_MODES.length;
+        m.sheet = audio ? 'graphics' : 'audio';
+        m.index = 0;
+      } else if (audio) {
+        const a = this.audioPrefs;
+        if (m.index === 1) {
+          a.masterIdx = (a.masterIdx + dir + AUDIO_VOL.length) % AUDIO_VOL.length;
+        } else if (m.index === 2) {
+          a.vehicleIdx = (a.vehicleIdx + dir + AUDIO_VOL.length) % AUDIO_VOL.length;
+        } else if (m.index === 3) {
+          a.musicIdx = (a.musicIdx + dir + AUDIO_VOL.length) % AUDIO_VOL.length;
+        } else if (m.index === 4) {
+          a.styleIdx = (a.styleIdx + dir + MUSIC_STYLES.length) % MUSIC_STYLES.length;
+        }
+        this._applyAudio(true);
+      } else {
+        const g = this.gfx;
+        if (m.index === 1) {
+          g.resIdx = (g.resIdx + dir + GFX_RES.length) % GFX_RES.length;
+        } else if (m.index === 2) {
+          g.distIdx = (g.distIdx + dir + GFX_DIST.length) % GFX_DIST.length;
+        } else if (m.index === 3) {
+          g.pedIdx = (g.pedIdx + dir + GFX_PEDS.length) % GFX_PEDS.length;
+        } else if (m.index === 4) {
+          g.trafficIdx = (g.trafficIdx + dir + GFX_TRAFFIC.length) % GFX_TRAFFIC.length;
+        } else if (m.index === 5) {
+          g.shadowIdx = (g.shadowIdx + dir + GFX_SHADOWS.length) % GFX_SHADOWS.length;
+        } else if (m.index === 6) {
+          g.timeIdx = (g.timeIdx + dir + TIME_MODES.length) % TIME_MODES.length;
+        }
+        this._applyGfx({ preview: true });
       }
-      this._applyGfx({ preview: true });
     }
   }
 
@@ -884,6 +973,39 @@ class Game {
 
   _saveGfx() {
     try { localStorage.setItem(GFX_KEY, JSON.stringify(this.gfx)); } catch { /* private mode */ }
+  }
+
+  _defaultAudio() {
+    return { masterIdx: 5, vehicleIdx: 3, musicIdx: 4, styleIdx: 0 };
+  }
+
+  _loadAudio() {
+    const d = this._defaultAudio();
+    try {
+      const raw = localStorage.getItem(AUDIO_KEY);
+      if (raw == null || raw === '') return d;
+      const s = JSON.parse(raw);
+      if (!s || typeof s !== 'object') return d;
+      return {
+        masterIdx: this._gfxIdx(s.masterIdx, AUDIO_VOL.length, d.masterIdx),
+        vehicleIdx: this._gfxIdx(s.vehicleIdx, AUDIO_VOL.length, d.vehicleIdx),
+        musicIdx: this._gfxIdx(s.musicIdx, AUDIO_VOL.length, d.musicIdx),
+        styleIdx: this._gfxIdx(s.styleIdx, MUSIC_STYLES.length, d.styleIdx),
+      };
+    } catch {
+      return d;
+    }
+  }
+
+  _applyAudio(persist = false) {
+    const a = this.audioPrefs || this._defaultAudio();
+    this.audio.setMasterVolume(AUDIO_VOL[a.masterIdx] / 100);
+    this.audio.setVehicleVolume(AUDIO_VOL[a.vehicleIdx ?? 3] / 100);
+    this.audio.setMusicVolume(AUDIO_VOL[a.musicIdx] / 100);
+    this.audio.setMusicStyle(MUSIC_STYLES[a.styleIdx]);
+    if (persist) {
+      try { localStorage.setItem(AUDIO_KEY, JSON.stringify(a)); } catch { /* private mode */ }
+    }
   }
 
   _updateDayNight(dt) {
@@ -1008,6 +1130,7 @@ class Game {
       if (this.race) this.race.dispose();
       this.setAmbient(false);
       this.race = race;
+      this._finishSounded = false;
       started = true;
       this.chase.started = false;
       this.chase.update(this.player, 1 / 60, { lookBack: false, orbitYaw: 0, orbitPitch: 0 });
@@ -1036,6 +1159,7 @@ class Game {
     this.race.dispose();
     this.race = null;
     this.hud.race = null;
+    this._finishSounded = false;
     this.setAmbient(true);
     this.resetSimClock();
   }
@@ -1564,6 +1688,7 @@ class Hud {
     } else {
       // Top-Left Pause Button
       this._drawTouchButton(ctx, L.pauseBtn, L.pauseBtn.label, tc.pausePressed, 'gold');
+      if (L.hornBtn) this._drawTouchButton(ctx, L.hornBtn, L.hornBtn.label, tc.hornPressed, 'gold');
 
       // Bottom-Left Steering Buttons
       this._drawTouchButton(ctx, L.leftBtn, L.leftBtn.label, tc.leftPressed, 'gold');
@@ -2230,7 +2355,7 @@ class Hud {
       ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
       ctx.fillStyle = '#ffd54a';
       ctx.textAlign = 'center';
-      ctx.fillText('CONTROLS:  WASD / ARROWS  drive    SPACE  handbrake / drift    C  look back    CTRL+F  fullscreen    R  reset', w / 2, barY + 23);
+      ctx.fillText('CONTROLS:  WASD / ARROWS  drive    SPACE  handbrake    H  horn    C  look back    CTRL+F  fullscreen    R  reset', w / 2, barY + 23);
     }
   }
 
@@ -2382,25 +2507,37 @@ class Hud {
   _drawSettings(menu) {
     const { ctx, w, h } = this;
     const g = menu.gfx || { resIdx: 0, distIdx: 2, pedIdx: 2, trafficIdx: 2, shadowIdx: 3, timeIdx: 0 };
-    const rows = [
-      ['RESOLUTION', GFX_RES_LABELS[g.resIdx] || '1.0X'],
-      ['DRAW DISTANCE', GFX_DIST_LABELS[g.distIdx] || '500 M'],
-      ['PEDESTRIANS', String(GFX_PEDS[g.pedIdx] ?? 10)],
-      ['TRAFFIC CARS', String(GFX_TRAFFIC[g.trafficIdx] ?? 5)],
-      ['SHADOWS', GFX_SHADOW_LABELS[g.shadowIdx] || 'HIGH'],
-      ['TIME OF DAY', TIME_MODE_LABELS[g.timeIdx || 0] || 'DYNAMIC (3 MIN)'],
-    ];
+    const a = menu.audioPrefs || { masterIdx: 5, vehicleIdx: 3, musicIdx: 4, styleIdx: 0 };
+    const audio = menu.sheet === 'audio';
+    const rows = audio
+      ? [
+        ['SHEET', 'AUDIO'],
+        ['MASTER', AUDIO_VOL[a.masterIdx] + '%'],
+        ['VEHICLE', AUDIO_VOL[a.vehicleIdx ?? 3] + '%'],
+        ['MUSIC', AUDIO_VOL[a.musicIdx] + '%'],
+        ['STYLE', MUSIC_STYLE_LABELS[a.styleIdx] || 'CHILL DRIVE'],
+      ]
+      : [
+        ['SHEET', 'GRAPHICS'],
+        ['RESOLUTION', GFX_RES_LABELS[g.resIdx] || '1.0X'],
+        ['DRAW DISTANCE', GFX_DIST_LABELS[g.distIdx] || '500 M'],
+        ['PEDESTRIANS', String(GFX_PEDS[g.pedIdx] ?? 10)],
+        ['TRAFFIC CARS', String(GFX_TRAFFIC[g.trafficIdx] ?? 5)],
+        ['SHADOWS', GFX_SHADOW_LABELS[g.shadowIdx] || 'HIGH'],
+        ['TIME OF DAY', TIME_MODE_LABELS[g.timeIdx || 0] || 'DYNAMIC (3 MIN)'],
+      ];
 
     ctx.font = '700 28px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = '#f0e6d8';
     ctx.shadowColor = 'rgba(20,10,14,0.9)';
     ctx.shadowBlur = 10;
-    ctx.fillText('SETTINGS', w / 2, h / 2 - 145);
+    ctx.fillText('SETTINGS', w / 2, h / 2 - (audio ? 140 : 160));
     ctx.shadowBlur = 0;
 
     ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
+    const row0 = audio ? h / 2 - 90 : h / 2 - 110;
     for (let k = 0; k < rows.length; k++) {
-      const y = h / 2 - 95 + k * 35;
+      const y = row0 + k * 34;
       const sel = k === menu.index;
       ctx.fillStyle = sel ? '#ffd54a' : 'rgba(201,184,165,0.8)';
       if (sel) ctx.fillText('▶', w / 2 - 220, y);
@@ -2415,7 +2552,7 @@ class Hud {
     ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(240,230,216,0.55)';
     ctx.fillText('UP / DOWN  row    LEFT / RIGHT  change    ESC  back',
-      w / 2, h / 2 + 135);
+      w / 2, h / 2 + (audio ? 110 : 150));
   }
 
   _drawRace(ctx, w, h) {

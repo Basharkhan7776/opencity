@@ -56,6 +56,10 @@ import { Ambience } from './ambience.js';
 import { StartTones } from './start.js';
 import { FinishTones } from './finish.js';
 import { FeedbackVoices } from './feedback.js';
+import { Horn } from './horn.js';
+import { Crowd } from './crowd.js';
+import { Music, MUSIC_STYLES } from './music.js';
+import { NearbyEngines } from './nearby.js';
 
 const SEED = 4711;
 
@@ -83,6 +87,11 @@ export class Audio {
     this._airborne = false;
     this._duck = 0;
     this._speed = 0;
+    this._musicVol = 0;
+    this._musicStyle = 'off';
+    this._vehVol = 1;
+    this._muted = false;
+    this._resuming = null;
     /* Defaults chosen so the game sounds like a coast road before anything is
        wired: a road forty metres above the water with the sea somewhere off to
        the left is the setting, and a state struct that omits the new fields
@@ -105,11 +114,18 @@ export class Audio {
         this.now = this.offline ? 0 : ctx.currentTime;
         this._ownsContext = !this.opts.context;
         this._build(ctx);
+        if (!this.offline) {
+          ctx.onstatechange = () => {
+            if (ctx.state === 'suspended' && this.running && !this._muted) this._kickResume();
+          };
+        }
       }
+      this._muted = false;
       if (!this.offline && this.ctx.state !== 'running') {
         await this.ctx.resume().catch(() => {});
       }
       this.running = true;
+      this._applyMaster();
       return this.ctx;
     })();
     /* Cleared rather than cached, so a start() that failed because the gesture
@@ -157,7 +173,7 @@ export class Audio {
     /* 2x rather than 4x: the extra oversampling buys very little on a curve
        this gentle, and Chromium's resampling filters ring, which puts back
        some of the overshoot the stage exists to remove. */
-    this.limiter.oversample = '2x';
+    this.limiter.oversample = 'none';
     this.limiter.connect(ctx.destination);
 
     this.master = ctx.createGain();
@@ -321,6 +337,13 @@ export class Audio {
     /* Rank punctuation shares the one-shot bus; the pad's sustained second
        motor joins the car bus instead. feedback.js owns why the split matters. */
     this.feedback = new FeedbackVoices(ctx, this.bus, this.hits, buffers, this.seed + 1207);
+    this.horn = new Horn(ctx, this.hits);
+    this.crowd = new Crowd(ctx, this.amb, buffers);
+    this.music = new Music(ctx, this.duck, this.seed + 44, buffers.white);
+    this.music.setVolume(this._musicVol);
+    this.music.setStyle(this._musicStyle);
+    this.nearby = new NearbyEngines(ctx, this.bus, buffers, 6);
+    this.bus.gain.value = 1.15 * this._vehVol;
 
     /* Sidechain.
      *
@@ -353,15 +376,51 @@ export class Audio {
     };
   }
 
-  /** Suspend. Cheap to reverse — start() picks the same graph back up. */
+  /**
+   * Mute for pause. The context stays running — suspend/resume is what made
+   * the engine drop out for a second (or forever) on unpause.
+   */
   stop() {
     this.running = false;
-    if (this.ctx && !this.offline) this.ctx.suspend().catch(() => {});
+    this._muted = true;
+    this._applyMaster();
   }
 
   setMasterVolume(v) {
     this.volume = clamp(v, 0, 1);
-    if (this.master) this.master.gain.setTargetAtTime(this.volume, this.now, 0.03);
+    this._applyMaster();
+  }
+
+  setVehicleVolume(v) {
+    this._vehVol = clamp(v, 0, 1);
+    if (this.bus) {
+      const t = this.now || this.ctx?.currentTime || 0;
+      this.bus.gain.setTargetAtTime(1.15 * this._vehVol, t, 0.03);
+    }
+  }
+
+  setMusicVolume(v) {
+    this._musicVol = clamp(v, 0, 1);
+    this.music?.setVolume(this._musicVol);
+  }
+
+  setMusicStyle(id) {
+    this._musicStyle = MUSIC_STYLES.includes(id) ? id : 'off';
+    this.music?.setStyle(this._musicStyle);
+  }
+
+  _applyMaster() {
+    if (!this.master) return;
+    const t = this.now || this.ctx?.currentTime || 0;
+    const v = this._muted ? 0.0001 : this.volume;
+    this.master.gain.setTargetAtTime(v, t, 0.025);
+  }
+
+  _kickResume() {
+    if (!this.ctx || this.offline || this._resuming) return;
+    this._resuming = this.ctx.resume()
+      .catch(() => {})
+      .finally(() => { this._resuming = null; });
   }
 
   /**
@@ -371,6 +430,13 @@ export class Audio {
    */
   update(dt, state) {
     if (!this.ctx || !state) return;
+    if (!this.offline) {
+      if (this.ctx.state === 'suspended') {
+        if (!this._muted) this._kickResume();
+        return;
+      }
+      if (this._muted) return;
+    }
     const step = clamp(dt || 0, 1 / 480, 0.1);
 
     /* Offline renders run on a virtual clock: currentTime does not advance
@@ -420,6 +486,8 @@ export class Audio {
     if (state.shoreDrop != null) sh.drop = Math.max(0, state.shoreDrop);
     if (state.oceanSide != null) sh.side = clamp(state.oceanSide, -1, 1);
 
+    this.horn.set(!!state.horn, t);
+
     this.ambience.update(step, {
       speed,
       airborne,
@@ -427,7 +495,18 @@ export class Audio {
       shoreDrop: sh.drop,
       oceanSide: sh.side,
       openness: state.openness,
+      timeOfDay: state.timeOfDay,
+      rr: state.rr,
     }, t);
+    if (state.crowd) this.crowd.update(step, t, state.crowd);
+    this.music?.update(t);
+    if (this.nearby) {
+      this.nearby.update(t, {
+        x: state.listenerX || 0,
+        z: state.listenerZ || 0,
+        yaw: state.listenerYaw || 0,
+      }, state.others);
+    }
 
     /* Landing.
      *
@@ -572,6 +651,9 @@ export class Audio {
       finish: this.finishTones.out,
       boost: this.feedback.boostOut,
       position: this.feedback.positionOut,
+      horn: this.horn.out,
+      crowd: this.crowd.out,
+      music: this.music.out,
     };
   }
 
@@ -584,6 +666,10 @@ export class Audio {
     this.startTones.dispose();
     this.finishTones.dispose();
     this.feedback.dispose();
+    this.horn?.dispose();
+    this.crowd?.dispose();
+    this.music?.dispose();
+    this.nearby?.dispose();
     for (const n of [this.bus, this.amb, this.hits, this.duck, this.send, this.verb,
       this.wet, ...this.wetNet, ...this.wetThru, ...this.wetSwap,
       this.comp, this.limiter, this.dcBlock, this.master]) n.disconnect();

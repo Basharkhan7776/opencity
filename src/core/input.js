@@ -57,6 +57,7 @@ const KEYS = {
      input that arrived at the wrong moment. */
   pause: ['Escape'],
   map: ['KeyM'],
+  horn: ['KeyH'],
   /* Menu navigation reuses the driving keys, which is not laziness: the hand
      is already on them, and they are only ever read while the simulation is
      stopped and the car cannot see them. */
@@ -90,6 +91,9 @@ const KEYS = {
              1.7 m, against handbrake 0 and 3.1 m for a car whose driver let
              go. West is free, it is next to south under the same thumb, and
              it is not a driving control.
+     east    horn. A LEVEL, like the H key: held for as long as the button is
+             down. Free on the face cluster (south is handbrake, west is skip,
+             north is look back) and the right thumb is otherwise idle.
      north   look back. A LEVEL, not an edge, like the C key. Both index
              fingers are already on the triggers — they are the throttle and
              the brake — so a shoulder button would mean lifting off one of
@@ -154,6 +158,7 @@ export class Input {
     this.down = new Set();
     this.steer = 0; this.throttle = 0; this.brake = 0; this.handbrake = 0;
     this.lookBack = false;
+    this.horn = false;
     this.resetPressed = false;
     this.skipPressed = false;
     /* A tap on the glass, as an EDGE, and deliberately not folded into
@@ -285,6 +290,8 @@ export class Input {
        long as the button is down and not one frame longer, so an edge here
        would be a toggle, which is a different control. */
     this.lookBack = this.held('look') || !!pad?.buttons[PAD.north]?.pressed;
+    this.horn = this.held('horn') || !!pad?.buttons[PAD.east]?.pressed;
+    if (touch && touch.live) this.horn = this.horn || !!touch.horn;
     /* Edges, on both halves, because both of them do something once and
        destructively — see main.js, where this one key has three answers. */
     this.resetPressed = this.pressed('reset') || padEdge(PAD.select);

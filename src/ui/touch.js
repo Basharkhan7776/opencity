@@ -5,6 +5,7 @@
  *   - Accelerate ▲ (Gas) & Brake ■ pedals (bottom-right)
  *   - Handbrake (P) button (bottom-right)
  *   - Pause ⏸ button (top-left)
+ *   - Horn H button (top-left, next to pause)
  *   - Menu navigation controllers (when menu / settings is open)
  *   - Touch-to-move camera orbiting (dragging anywhere in the viewport)
  *   - Automatic mobile device recognition & dynamic activation
@@ -56,6 +57,7 @@ export class Touch {
     this.throttle = 0;
     this.brake = 0;
     this.handbrake = 0;
+    this.horn = 0;
 
     // Menu and Action edges
     this._tap = false;
@@ -169,6 +171,7 @@ export class Touch {
     const handbrakeBtn = { id: 'handbrake', x: right - hbW, y: bottom - gasH - 12 - hbH, w: hbW, h: hbH, label: 'P', kind: 'handbrake' };
 
     const pauseBtn = { id: 'pause', x: left, y: top, w: 52, h: 52, label: '⏸', kind: 'pause' };
+    const hornBtn = { id: 'horn', x: left + 52 + 10, y: top, w: 52, h: 52, label: 'H', kind: 'horn' };
 
     // Minimap radar touch target (top-right on mobile)
     const mmR = 64;
@@ -200,7 +203,7 @@ export class Touch {
     const menuBack = { id: 'back', x: right - actW, y: bottom - actH, w: actW, h: actH, label: 'BACK', kind: 'menu' };
 
     this.L = {
-      leftBtn, rightBtn, gasPedal, brakePedal, handbrakeBtn, pauseBtn, minimapBtn, mapBackBtn,
+      leftBtn, rightBtn, gasPedal, brakePedal, handbrakeBtn, pauseBtn, hornBtn, minimapBtn, mapBackBtn,
       menuUp, menuDown, menuLeft, menuRight, menuConfirm, menuBack,
     };
   }
@@ -234,6 +237,7 @@ export class Touch {
         else if (this._hit(L.menuBack, x, y)) { role = 'pause'; rect = L.menuBack; }
       } else {
         if (this._hit(L.pauseBtn, x, y)) { role = 'pause'; rect = L.pauseBtn; }
+        else if (this._hit(L.hornBtn, x, y)) { role = 'horn'; rect = L.hornBtn; }
         else if (this._hit(L.minimapBtn, x, y)) { role = 'map'; rect = L.minimapBtn; }
         else if (this._hit(L.leftBtn, x, y)) { role = 'left'; rect = L.leftBtn; }
         else if (this._hit(L.rightBtn, x, y)) { role = 'right'; rect = L.rightBtn; }
@@ -308,6 +312,7 @@ export class Touch {
     let thr = 0;
     let brk = 0;
     let hb = 0;
+    let horn = 0;
     let camActive = false;
 
     for (const p of this._points.values()) {
@@ -316,6 +321,7 @@ export class Touch {
       else if (p.role === 'throttle') thr = 1;
       else if (p.role === 'brake') brk = 1;
       else if (p.role === 'handbrake') hb = 1;
+      else if (p.role === 'horn') horn = 1;
       else if (p.role === 'camera') camActive = true;
     }
 
@@ -323,6 +329,7 @@ export class Touch {
     this.throttle = thr;
     this.brake = brk;
     this.handbrake = hb;
+    this.horn = horn;
     this.cameraDragging = camActive;
   }
 
@@ -404,6 +411,7 @@ export class Touch {
       throttlePressed: activeRoles.has('throttle'),
       brakePressed: activeRoles.has('brake'),
       handbrakePressed: activeRoles.has('handbrake'),
+      hornPressed: activeRoles.has('horn'),
       pausePressed: activeRoles.has('pause'),
       menuUpPressed: activeRoles.has('menuUp'),
       menuDownPressed: activeRoles.has('menuDown'),

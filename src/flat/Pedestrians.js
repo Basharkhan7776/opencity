@@ -415,9 +415,12 @@ export class Pedestrians {
    * Advance the cast. Called once per simulation step from Game.step.
    */
   update(dt, px, pz, player) {
-    if (!this.ready || this.disposed || this.enabled === false) return;
+    if (!this.ready || this.disposed || this.enabled === false) {
+      return { nearest: 1e9, walking: 0, hit: false, dx: 0, dz: 0 };
+    }
     let respawns = 0;
     const maxRespawns = Math.max(2, Math.min(8, Math.ceil(this.limit / 6)));
+    let nearest = 1e9, walking = 0, ndx = 0, ndz = 0;
     for (let i = 0; i < this.peds.length; i++) {
       const ped = this.peds[i];
       if (i >= this.limit) {
@@ -430,12 +433,19 @@ export class Pedestrians {
         this._stepPed(ped, dt);
         this._footPathPoint(ped, ped.anchor.position);
         const dx = ped.anchor.position.x - px, dz = ped.anchor.position.z - pz;
-        if (dx * dx + dz * dz > this.radius * this.radius) ped.active = false;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > this.radius * this.radius) ped.active = false;
+        else {
+          const d = Math.sqrt(d2);
+          if (d < nearest) { nearest = d; ndx = dx; ndz = dz; }
+          if (!ped.isIdle && d < 28) walking++;
+        }
       } else if (respawns < maxRespawns && this._spawn(ped, px, pz, player)) {
         respawns++;
       }
       ped.anchor.visible = ped.active;
     }
+    return { nearest, walking, hit: nearest < 1.2, dx: ndx, dz: ndz };
   }
 
   dispose() {
